@@ -1,0 +1,100 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "awask"
+version = "0.1.0"
+description = "Your agent asks you a question — and acts on your answer. Durable decision cards for agents: a structured ask, delivered wherever you are, whose answer steers the run that raised it."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+authors = [{ name = "Aitherium", email = "hello@aitherium.com" }]
+keywords = ["agents", "human-in-the-loop", "cli", "claude-code", "decisions", "approval"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries",
+]
+
+# ZERO dependencies, and that is a feature rather than an accident. Measured on the
+# source tree before extraction: 6,547 lines across 12 modules with no import outside
+# its own package. The store is a directory of JSON files and the window is tkinter
+# from the standard library, so `pip install awask` is the entire setup -- no server,
+# no login, no network, nothing to start.
+#
+# It also buys something less obvious: a Claude Code hook runs under `python -S`, and
+# `import adk` dies there on a missing third-party module. `import awask` cannot.
+dependencies = []
+
+[project.optional-dependencies]
+# Deliver a card to a chat DM. The bridge itself is stdlib (urllib), so these are only
+# needed for the adapters that want a real client; the Discord webhook path works with
+# neither installed.
+chat = ["httpx>=0.25.0"]
+
+[project.urls]
+Homepage = "https://aitherium.com"
+Source = "https://github.com/Aitherium/awask"
+
+[project.scripts]
+awask = "awask.entry:main"
+
+[tool.hatch.build.targets.sdist]
+# The sdist must ship the PACKAGE, not the repo that builds it. hatchling's
+# default is "everything in the project directory", which is how `scripts/` --
+# holding the publish-time moat guard -- ended up inside the tarball.
+#
+# That guard's job is to REFUSE an artifact containing internal rule ids and
+# hostnames, so it carries every one of those strings as its own detection
+# patterns. Shipped inside the artifact it inspects, it flags ITSELF: measured
+# 2026-08-23, seven MOAT002 findings, all of them the guard reading its own
+# source. The sibling packages never hit this only because they build with
+# setuptools, whose default sdist does not sweep the project root.
+#
+# Excluding it loses nothing: the public repo's publish workflow runs
+# `python scripts/check_moat_boundary.py` from a git checkout, never from the
+# unpacked sdist.
+include = ["awask", "README.md", "LICENSE", "pyproject.toml"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["awask"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# The Claude Code hooks are DATA, not modules -- they are copied onto disk by
+# `awask install-hooks` and executed by the harness, never imported. Force-including
+# them is what makes the difference between shipping a CLI and shipping the loop:
+# without these three files a stranger gets cards only when an agent types the
+# command, which is the failure this package exists to end.
+"awask/hooks/stop_awask_cards.py" = "awask/hooks/stop_awask_cards.py"
+"awask/hooks/awask_mailbox_drain.py" = "awask/hooks/awask_mailbox_drain.py"
+"awask/hooks/awask_notification_card.py" = "awask/hooks/awask_notification_card.py"
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+# The monorepo quality gate runs `ruff --isolated` from the REPO ROOT, where
+# first-party detection cannot see this directory, so it files `awask` as
+# third-party. Rooted here, ruff instead detects `awask/` as first-party and
+# demands the OPPOSITE import layout -- two invocations giving mutually
+# exclusive I001 verdicts on the same file, each `--fix` undoing the other.
+# Measured 2026-08-23 on tests/test_store.py the moment it was written: the
+# gate reported I001 while a run from inside the package said "All checks
+# passed". Empty `src` disables path-based detection so the local run agrees
+# with the gate that actually blocks a merge. tests/test_lint_config_agrees.py
+# is what keeps it that way -- a comment did not stop this in the sibling
+# packages either.
+src = []
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501", "E402", "E741"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
