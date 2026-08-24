@@ -472,8 +472,8 @@ def _self_test() -> int:
     import asyncio
 
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["AITHER_DECISIONS_DIR"] = str(Path(tmp) / "cards")
-        os.environ["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
+        os.environ["AWASK_DIR"] = str(Path(tmp) / "cards")
+        os.environ["AWASK_DIR"] = str(Path(tmp) / "steer")
         store = DecisionStore(Path(tmp) / "cards")
         bridge = DecisionChannelBridge(store, {"discord": good})
 

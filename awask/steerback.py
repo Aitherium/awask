@@ -39,15 +39,15 @@ from awask.store import DecisionCard
 
 #: How long any single live attempt may take. A steer is a nicety layered on top
 #: of a mailbox write that already succeeded; it must never hold up a click.
-TIMEOUT_SECONDS = float(os.getenv("AITHER_DECISIONS_STEER_TIMEOUT", "3"))
+TIMEOUT_SECONDS = float(os.getenv("AWASK_STEER_TIMEOUT", "3"))
 
 
 def harness_url() -> str:
-    explicit = os.getenv("AITHER_HARNESS_URL", "").strip()
+    explicit = os.getenv("AWASK_URL", "").strip()
     if explicit:
         return explicit.rstrip("/")
-    host = os.getenv("AITHER_HARNESS_HOST", "127.0.0.1")
-    port = os.getenv("AITHER_HARNESS_PORT", "8362")
+    host = os.getenv("AWASK_HOST", "127.0.0.1")
+    port = os.getenv("AWASK_PORT", "8362")
     # 127.0.0.1, never localhost: measured on this box, ::1 refuses after
     # 2120 ms while IPv4 connects in 3 ms.
     return f"http://{host}:{port}"
@@ -55,7 +55,7 @@ def harness_url() -> str:
 
 def harness_token() -> str:
     """The daemon bearer, from the environment or the file the daemon writes."""
-    token = os.getenv("AITHER_HARNESS_TOKEN", "").strip()
+    token = os.getenv("AWASK_TOKEN", "").strip()
     if token:
         return token
     path = Path.home() / ".aither" / "harness_token"
@@ -114,7 +114,7 @@ def try_chat_steer(session_id: str, text: str) -> tuple[bool, str]:
     """Inject into an in-flight ``/chat/stream`` turn. ``(landed, why)``."""
     if not session_id:
         return False, "no session id"
-    base = os.getenv("AITHER_DECISIONS_STEER_URL", "").strip()
+    base = os.getenv("AWASK_STEER_URL", "").strip()
     if not base:
         return False, "no /chat/steer endpoint configured"
     ok, detail = _post(
@@ -189,16 +189,16 @@ def _self_test() -> int:
     landed, why = try_harness("definitely-not-a-session", "hello")
     check("an unknown session is a miss, not a claim", not landed, why)
 
-    previous = os.environ.pop("AITHER_DECISIONS_STEER_URL", None)
+    previous = os.environ.pop("AWASK_STEER_URL", None)
     landed, why = try_chat_steer("s", "hello")
     check("chat-steer with no endpoint is a miss", not landed and "configured" in why, why)
-    os.environ["AITHER_DECISIONS_STEER_URL"] = "http://127.0.0.1:1"  # nothing listens
+    os.environ["AWASK_STEER_URL"] = "http://127.0.0.1:1"  # nothing listens
     landed, why = try_chat_steer("s", "hello")
     check("chat-steer against a dead port is a miss", not landed, why)
     if previous is None:
-        os.environ.pop("AITHER_DECISIONS_STEER_URL", None)
+        os.environ.pop("AWASK_STEER_URL", None)
     else:
-        os.environ["AITHER_DECISIONS_STEER_URL"] = previous
+        os.environ["AWASK_STEER_URL"] = previous
 
     landed, why = try_console(0, "hello")
     check("console typing at no pid is a miss", not landed, why)

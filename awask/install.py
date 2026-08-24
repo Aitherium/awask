@@ -331,9 +331,11 @@ def self_test() -> int:
         coll.joinpath("settings.json").write_text(
             json.dumps({"hooks": {
                 "Stop": [{"matcher": "", "hooks": [
-                    {"type": "command", "command": "python .claude/hooks/stop-decision-cards.py"}]}],
+                    {"type": "command",
+                     "command": "python .claude/hooks/stop-decision-cards.py"}]}],
                 "UserPromptSubmit": [{"matcher": "", "hooks": [
-                    {"type": "command", "command": "python .claude/hooks/steer-mailbox-drain.py"}]}],
+                    {"type": "command",
+                     "command": "python .claude/hooks/steer-mailbox-drain.py"}]}],
             }}),
             encoding="utf-8",
         )

@@ -18,6 +18,7 @@ cannot reach a verdict never exits 0 — silence is not a pass.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -131,7 +132,10 @@ def _detect_session_id(explicit: str = "") -> str:
     # The SessionStart hook therefore records claude-pid -> session-id under
     # ~/.aither/session-pids/, and we walk our own ancestry to find it: the
     # CLI runs as a descendant of the session's claude process.
-    try:
+    # `suppress`, not `except: pass`: the degrade is deliberate (a lost return
+    # path must never stop the question being asked), and saying so in one token
+    # keeps it distinguishable from a handler that swallowed a real bug.
+    with contextlib.suppress(Exception):
         from awask import winproc
 
         base = Path(os.path.expanduser("~/.aither/session-pids"))
@@ -142,8 +146,6 @@ def _detect_session_id(explicit: str = "") -> str:
                     value = mapped.read_text(encoding="utf-8").strip()
                     if value:
                         return value
-    except Exception:  # noqa: BLE001 - a lost return path degrades, never breaks the raise
-        pass
     return ""
 
 

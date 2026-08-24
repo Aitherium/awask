@@ -62,11 +62,11 @@ _URGENCY_STYLE = {
 def colour_enabled(stream: TextIO) -> bool:
     """True when ANSI is safe on ``stream``.
 
-    ``NO_COLOR`` and a non-TTY both disable it. ``AITHER_DECISIONS_COLOR=always``
+    ``NO_COLOR`` and a non-TTY both disable it. ``AWASK_COLOR=always``
     forces it on, which is what lets a hook pipe a coloured card through to a
     terminal it does not itself own.
     """
-    override = os.getenv("AITHER_DECISIONS_COLOR", "").strip().lower()
+    override = os.getenv("AWASK_COLOR", "").strip().lower()
     if override in ("always", "1", "true", "yes"):
         return True
     if override in ("never", "0", "false", "no"):

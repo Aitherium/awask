@@ -35,7 +35,7 @@ _MAX_CHARS = 8000
 def steer_root() -> Path:
     """Where answers land. Same default and same env var as the rest of the family,
     so a card raised through one tool is drained by another without configuration."""
-    env = os.getenv("AITHER_STEER_DIR", "").strip()
+    env = os.getenv("AWASK_DIR", "").strip()
     return Path(env) if env else (Path.home() / ".aither" / "steer")
 
 
@@ -118,7 +118,7 @@ def self_test() -> int:
         ok = ok and cond
 
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["AITHER_STEER_DIR"] = tmp
+        os.environ["AWASK_DIR"] = tmp
         box = Path(tmp) / "sess-1"
         box.mkdir()
         (box / "001.md").write_text("ship it", encoding="utf-8")

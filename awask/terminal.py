@@ -28,7 +28,7 @@ module is where it would hide.
    tab)** — the second is the one that matters, because that is the shape a
    Claude Code session runs in, and a pass on conhost says nothing about it.
    Re-measure with ``python -m awask.terminal --live-console --conpty``.
-   It stays OFF by default behind ``AITHER_DECISIONS_CONSOLE_INPUT=1`` anyway:
+   It stays OFF by default behind ``AWASK_CONSOLE_INPUT=1`` anyway:
    proven-to-work is not the same as safe-to-fire, and it is the only capability
    here that can land characters in a prompt the owner is mid-way through
    typing, corrupting a command rather than failing cleanly.
@@ -168,7 +168,7 @@ def console_input_enabled() -> bool:
     through typing, and the result is a corrupted command rather than an error.
     An opt-in makes that a decision somebody made once, on purpose.
     """
-    raw = os.getenv("AITHER_DECISIONS_CONSOLE_INPUT", "").strip().lower()
+    raw = os.getenv("AWASK_CONSOLE_INPUT", "").strip().lower()
     if raw:
         # An explicit env value ALWAYS wins, including an explicit "0" — turning
         # this off for one session must not require editing a file.
@@ -228,7 +228,7 @@ def type_into_console(pid: int, text: str, *, submit: bool = True) -> tuple[bool
     if not text.strip():
         return False, "nothing to send"
     if not console_input_enabled():
-        return False, "console typing is off (set AITHER_DECISIONS_CONSOLE_INPUT=1)"
+        return False, "console typing is off (set AWASK_CONSOLE_INPUT=1)"
     if os.name != "nt":
         return False, "console typing is implemented for Windows only"
     if not winproc.pid_alive(pid):
@@ -302,7 +302,7 @@ def capabilities(pid: int, cwd: str) -> dict[str, str]:
         "open": "ready" if (cwd and os.path.isdir(cwd)) else "unavailable — no directory",
         "type": (
             "ready" if (console_input_enabled() and target.alive and os.name == "nt")
-            else ("off — set AITHER_DECISIONS_CONSOLE_INPUT=1"
+            else ("off — set AWASK_CONSOLE_INPUT=1"
                   if not console_input_enabled() else "unavailable — session gone")
         ),
         "tab": target.title.strip(),
@@ -413,8 +413,8 @@ def live_console_probe(conpty: bool = False) -> int:
         return 2
     print(f"  reader pid {pid} in a {note}")
 
-    previous = os.environ.get("AITHER_DECISIONS_CONSOLE_INPUT")
-    os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = "1"
+    previous = os.environ.get("AWASK_CONSOLE_INPUT")
+    os.environ["AWASK_CONSOLE_INPUT"] = "1"
     ok, why, typed = False, "", ""
     try:
         time.sleep(1.0)  # let the child reach its readline
@@ -440,9 +440,9 @@ def live_console_probe(conpty: bool = False) -> int:
             time.sleep(0.25)
     finally:
         if previous is None:
-            os.environ.pop("AITHER_DECISIONS_CONSOLE_INPUT", None)
+            os.environ.pop("AWASK_CONSOLE_INPUT", None)
         else:
-            os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = previous
+            os.environ["AWASK_CONSOLE_INPUT"] = previous
         if winproc.pid_alive(pid):
             subprocess.run(["taskkill", "/PID", str(pid), "/F"],  # noqa: S603
                            capture_output=True, encoding="utf-8", errors="replace",
@@ -485,19 +485,19 @@ def _self_test() -> int:
     ok, why = open_terminal("Z:/definitely/not/here")
     check("opening a missing directory fails", not ok and "no such directory" in why, why)
 
-    previous = os.environ.get("AITHER_DECISIONS_CONSOLE_INPUT")
-    os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = ""
+    previous = os.environ.get("AWASK_CONSOLE_INPUT")
+    os.environ["AWASK_CONSOLE_INPUT"] = ""
     ok, why = type_into_console(os.getpid(), "echo hi")
     check("typing is refused while opt-out", not ok and "off" in why, why)
-    os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = "1"
+    os.environ["AWASK_CONSOLE_INPUT"] = "1"
     ok, why = type_into_console(0, "echo hi")
     check("typing at a dead pid is refused", not ok, why)
     ok, why = type_into_console(os.getpid(), "   ")
     check("typing whitespace is refused", not ok and "nothing to send" in why, why)
     if previous is None:
-        os.environ.pop("AITHER_DECISIONS_CONSOLE_INPUT", None)
+        os.environ.pop("AWASK_CONSOLE_INPUT", None)
     else:
-        os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = previous
+        os.environ["AWASK_CONSOLE_INPUT"] = previous
 
     caps = capabilities(os.getpid(), os.getcwd())
     check("capabilities names every control",

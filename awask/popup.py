@@ -20,7 +20,7 @@ Deliberate behaviours:
   OS frame, which on Windows is a bright title bar wrapped around a near-black
   card — the one bit of the surface we do not control was the loudest thing on
   screen. The frame is redrawn here (drag, pin, close, resize grip) rather than
-  left to the platform, with `AITHER_DECISIONS_CHROME=native` as the escape
+  left to the platform, with `AWASK_CHROME=native` as the escape
   hatch for a window manager that dislikes override-redirect windows.
 
 * **Nothing is truncated.** The first version cut facts at 200 characters and
@@ -133,7 +133,7 @@ def _fmt_age(seconds: float) -> str:
 
 def use_native_chrome() -> bool:
     """Draw our own frame unless the owner (or a hostile WM) asked otherwise."""
-    return os.getenv("AITHER_DECISIONS_CHROME", "").strip().lower() == "native"
+    return os.getenv("AWASK_CHROME", "").strip().lower() == "native"
 
 
 def _apply_dark_titlebar(root) -> None:
@@ -1366,8 +1366,8 @@ def _live_multisession() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         cards = Path(tmp) / "cards"
         env = dict(os.environ)
-        env["AITHER_DECISIONS_DIR"] = str(cards)
-        env["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
+        env["AWASK_DIR"] = str(cards)
+        env["AWASK_DIR"] = str(Path(tmp) / "steer")
         env["PYTHONPATH"] = os.pathsep.join(
             p for p in (str(root), env.get("PYTHONPATH", "")) if p
         )
@@ -1516,8 +1516,8 @@ def _self_test() -> int:
     from awask.store import DecisionOption, DecisionSource
 
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["AITHER_DECISIONS_DIR"] = str(Path(tmp) / "cards")
-        os.environ["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
+        os.environ["AWASK_DIR"] = str(Path(tmp) / "cards")
+        os.environ["AWASK_DIR"] = str(Path(tmp) / "steer")
         store = DecisionStore(Path(tmp) / "cards")
         long_fact = (
             "the six workstreams are executing in background workflow wmxuw5c0t and I "
