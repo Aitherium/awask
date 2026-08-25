@@ -50,7 +50,7 @@ def read_payload() -> dict:
 
 
 def state_dir() -> Path:
-    env = os.getenv("AWASK_DIR", "").strip()
+    env = os.getenv("AITHER_DECISIONS_DIR", "").strip()
     base = Path(env) if env else (Path.home() / ".aither" / "decisions")
     return base / "_notify"
 
@@ -142,13 +142,13 @@ def self_test() -> int:
     check("a different message is not muted", a != fingerprint("sess-a", "something else"))
 
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["AWASK_DIR"] = tmp
+        os.environ["AITHER_DECISIONS_DIR"] = tmp
         key = fingerprint("s", "m")
         check("the first raise is allowed", recently_raised(key) is False)
         check("an immediate repeat is muted", recently_raised(key) is True)
 
     # Fail CLOSED: an unwritable state dir must mute, never storm.
-    os.environ["AWASK_DIR"] = os.devnull
+    os.environ["AITHER_DECISIONS_DIR"] = os.devnull
     check("an unusable state dir mutes rather than storms",
           recently_raised(fingerprint("x", "y")) is True)
 

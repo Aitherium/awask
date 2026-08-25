@@ -41,7 +41,7 @@ from awask.store import STATUS_OPEN, DecisionCard, DecisionStore, decisions_dir
 
 #: Within this many seconds of the last toast, a new card is folded into a single
 #: summary toast rather than raising its own.
-QUIET_WINDOW_SECONDS = float(os.getenv("AWASK_QUIET_SECONDS", "45"))
+QUIET_WINDOW_SECONDS = float(os.getenv("AITHER_DECISIONS_QUIET_SECONDS", "45"))
 
 #: Windows will not show a toast from an unregistered AppID. The built-in
 #: PowerShell shortcut id is always present, so it works on a clean machine with
@@ -113,7 +113,7 @@ def _windows_toast(title: str, body: str, *, urgency: str = "normal") -> Optiona
     """Raise a native Windows toast. Returns an error string, or None on success."""
     scenario = ' scenario="urgent"' if urgency == "critical" else ""
     xml = (
-        f"<toast{scenario} activationType='protocol' launch='awask://open'>"
+        f"<toast{scenario} activationType='protocol' launch='aither-decide://open'>"
         "<visual><binding template='ToastGeneric'>"
         f"<text>{_xml_escape(title)}</text>"
         f"<text>{_xml_escape(body)}</text>"
@@ -176,7 +176,7 @@ def _linux_toast(title: str, body: str, *, urgency: str = "normal") -> Optional[
     level = {"critical": "critical", "high": "critical"}.get(urgency, "normal")
     try:
         proc = subprocess.run(
-            ["notify-send", "-u", level, "-a", "awask", title, body],
+            ["notify-send", "-u", level, "-a", "AitherShell", title, body],
             capture_output=True, text=True, timeout=20,
             encoding="utf-8", errors="replace",
         )
@@ -192,7 +192,7 @@ def native_toast(title: str, body: str, *, urgency: str = "normal") -> Optional[
     that works on a headless or remote box where no window can be drawn.
     """
     if not toast_enabled():
-        return "off by default (set AWASK_TOAST=1 to enable)"
+        return "off by default (set AITHER_DECISIONS_TOAST=1 to enable)"
     if sys.platform.startswith("win"):
         return _windows_toast(title, body, urgency=urgency)
     if sys.platform == "darwin":
@@ -213,13 +213,13 @@ def toast_enabled() -> bool:
     The card WINDOW is the channel. The toast stays available for the one case the
     window cannot serve — a headless or SSH-only box with no display.
     """
-    flag = os.getenv("AWASK_TOAST", "").strip().lower()
+    flag = os.getenv("AITHER_DECISIONS_TOAST", "").strip().lower()
     return flag in ("1", "true", "yes", "on")
 
 
 def popup_enabled() -> bool:
     """The card window, unless explicitly disabled or there is no display."""
-    flag = os.getenv("AWASK_POPUP", "").strip().lower()
+    flag = os.getenv("AITHER_DECISIONS_POPUP", "").strip().lower()
     if flag in ("0", "false", "no", "off"):
         return False
     if not sys.platform.startswith("win") and sys.platform != "darwin":
@@ -256,17 +256,17 @@ def open_card_window(card_id: str) -> Optional[str]:
     return None
 
 
-# ── webhook fan-out ──────────────────────────────────────────────────────────────
+# ── webhook fan-out (Awconnect / Relay / portal) ────────────────────────────
 
 
 def _webhook_post(card: DecisionCard, open_count: int) -> Optional[str]:
     """Best-effort POST to a local fan-out endpoint.
 
-    Points at an optional notification daemon that consumes raised cards. A
-    failure here is normal (the daemon may not be running) and must be reported
-    as skipped rather than treated as an outage.
+    Points at the harness daemon by default, which is what AitherShell, the portal
+    app and Awconnect all read. A failure here is normal (the daemon is often
+    down) and must be reported as skipped rather than treated as an outage.
     """
-    url = os.getenv("AWASK_WEBHOOK", "").strip()
+    url = os.getenv("AITHER_DECISIONS_WEBHOOK", "").strip()
     if not url:
         return "no webhook configured"
     payload = json.dumps({
@@ -279,7 +279,7 @@ def _webhook_post(card: DecisionCard, open_count: int) -> Optional[str]:
 
     req = urllib.request.Request(url, data=payload, method="POST")
     req.add_header("Content-Type", "application/json")
-    token = os.getenv("AWASK_TOKEN", "").strip()
+    token = os.getenv("AITHER_HARNESS_TOKEN", "").strip()
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     try:
@@ -329,8 +329,7 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
         hint = f"  ·  recommended: {recommended}" if recommended else ""
         left = card.seconds_left
         when = f"  ·  default in {human_age(left)}" if left is not None else ""
-        _text = card.summary or card.detail or "Open the card window to answer."
-        body = _text[:180] + hint + when
+        body = (card.summary or card.detail or "Open AitherShell to answer.")[:180] + hint + when
 
     # The card WINDOW is the primary channel. It is the only one that shows the
     # facts and the options, and the only one where clicking answers anything.

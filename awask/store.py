@@ -60,8 +60,8 @@ class DecisionError(RuntimeError):
 
 
 def decisions_dir() -> Path:
-    """The card directory, honouring ``AWASK_DIR`` for tests and tenants."""
-    env = os.getenv("AWASK_DIR", "").strip()
+    """The card directory, honouring ``AITHER_DECISIONS_DIR`` for tests and tenants."""
+    env = os.getenv("AITHER_DECISIONS_DIR", "").strip()
     base = Path(env) if env else (Path.home() / ".aither" / "decisions")
     base.mkdir(parents=True, exist_ok=True)
     return base
@@ -73,7 +73,7 @@ def steer_dir() -> Path:
     This is the path ``COCKPIT-DESIGN.md`` specifies and the UserPromptSubmit hook
     drains. Keeping the two in one place stops them drifting apart.
     """
-    env = os.getenv("AWASK_DIR", "").strip()
+    env = os.getenv("AITHER_STEER_DIR", "").strip()
     base = Path(env) if env else (Path.home() / ".aither" / "steer")
     base.mkdir(parents=True, exist_ok=True)
     return base

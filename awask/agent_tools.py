@@ -48,17 +48,17 @@ from awask.store import (
 #: is clamped, and the clamp is REPORTED in the result rather than applied
 #: quietly — an agent that thinks it waited an hour and actually waited ten
 #: minutes will draw the wrong conclusion from a timeout.
-MAX_WAIT_SECONDS = float(os.getenv("AWASK_MAX_WAIT", "3600"))
+MAX_WAIT_SECONDS = float(os.getenv("AITHER_DECISIONS_MAX_WAIT", "3600"))
 
 POLL_SECONDS = 1.0
 
 
 def _agent_name() -> str:
-    return os.getenv("AWASK_AGENT_NAME", "").strip() or "adk-agent"
+    return os.getenv("AITHER_AGENT_NAME", "").strip() or "adk-agent"
 
 
 def _session_id() -> str:
-    return (os.getenv("AWASK_SESSION_ID", "").strip()
+    return (os.getenv("AITHER_SESSION_ID", "").strip()
             or os.getenv("CLAUDE_SESSION_ID", "").strip())
 
 
@@ -362,10 +362,10 @@ def _self_test() -> int:
         check("refuses malformed JSON", True)
 
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["AWASK_DIR"] = str(Path(tmp) / "cards")
-        os.environ["AWASK_DIR"] = str(Path(tmp) / "steer")
-        os.environ["AWASK_POPUP"] = "0"   # no window in a self-test
-        os.environ["AWASK_SESSION_ID"] = "agent-selftest"
+        os.environ["AITHER_DECISIONS_DIR"] = str(Path(tmp) / "cards")
+        os.environ["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
+        os.environ["AITHER_DECISIONS_POPUP"] = "0"   # no window in a self-test
+        os.environ["AITHER_SESSION_ID"] = "agent-selftest"
         import awask.store as store_module
 
         store_module._STORE = None  # noqa: SLF001 - rebind the singleton at the temp dir

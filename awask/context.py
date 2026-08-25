@@ -49,7 +49,7 @@ from typing import Any, Callable, Optional
 from awask.store import DecisionCard
 
 #: No single source may hold the panel open longer than this.
-SOURCE_TIMEOUT = float(os.getenv("AWASK_CONTEXT_TIMEOUT", "6"))
+SOURCE_TIMEOUT = float(os.getenv("AITHER_DECISIONS_CONTEXT_TIMEOUT", "6"))
 
 #: Nothing renders more than this per source — the panel is for orientation, not
 #: for reading a 4,000-line diff. Truncation IS reported (see `more`), because a
@@ -312,7 +312,7 @@ def harvest_session(card: DecisionCard) -> ContextSource:
 def _gateway_url() -> str:
     # 127.0.0.1, never localhost: measured on this box, ::1 refuses after
     # 2120 ms while IPv4 connects in 3 ms.
-    return os.getenv("AWASK_MCP_GATEWAY", "http://127.0.0.1:8182").rstrip("/")
+    return os.getenv("AITHER_MCP_GATEWAY", "http://127.0.0.1:8182").rstrip("/")
 
 
 def harvest_platform(card: DecisionCard) -> ContextSource:

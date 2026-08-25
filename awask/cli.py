@@ -18,7 +18,6 @@ cannot reach a verdict never exits 0 — silence is not a pass.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import re
@@ -124,28 +123,6 @@ def _detect_session_id(explicit: str = "") -> str:
         value = (candidate or "").strip()
         if value:
             return value
-    # Neither env var reaches an ordinary Bash tool call INSIDE a session —
-    # Claude Code exports CLAUDE_SESSION_ID to hooks only. Measured 2026-08-23:
-    # a card raised by an agent via this CLI carried session_id="", the owner
-    # answered it, and the answer had no mailbox to route into — recorded,
-    # delivered to nobody, which reads as "answering cards does nothing".
-    # The SessionStart hook therefore records claude-pid -> session-id under
-    # ~/.aither/session-pids/, and we walk our own ancestry to find it: the
-    # CLI runs as a descendant of the session's claude process.
-    # `suppress`, not `except: pass`: the degrade is deliberate (a lost return
-    # path must never stop the question being asked), and saying so in one token
-    # keeps it distinguishable from a handler that swallowed a real bug.
-    with contextlib.suppress(Exception):
-        from awask import winproc
-
-        base = Path(os.path.expanduser("~/.aither/session-pids"))
-        if base.is_dir():
-            for pid, _name in winproc.ancestry(os.getpid()):
-                mapped = base / str(pid)
-                if mapped.is_file():
-                    value = mapped.read_text(encoding="utf-8").strip()
-                    if value:
-                        return value
     return ""
 
 
@@ -679,6 +656,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
+    _dv = locals().get("argv")
+    if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:
+        from ._doctor import report
+        return report()
     # Windows consoles here are cp1252, and this command prints card text the
     # agent wrote — an em dash or an arrow in it would raise UnicodeEncodeError
     # and turn a successful answer into a traceback AFTER the answer was already

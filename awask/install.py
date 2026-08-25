@@ -52,23 +52,6 @@ HOOKS = {
     "awask_notification_card.py": "Notification",
 }
 
-#: Filenames that already do this hook's job under a different name. A project that
-#: grew its own copy of the loop before awask existed has these wired; installing
-#: alongside them yields TWO cards per stop and TWO drains per prompt, which is
-#: strictly worse than not installing -- duplicate cards are exactly what trains
-#: someone to ignore the surface.
-#:
-#: Matching on our own filename alone cannot see this: the entries are equivalent in
-#: ROLE and share no name. Measured 2026-08-22 in the repo awask was extracted from,
-#: which had `stop-decision-cards.py` on Stop and `steer-mailbox-drain.py` on
-#: UserPromptSubmit -- so the tool would have collided with its own ancestor.
-EQUIVALENTS = {
-    "stop_awask_cards.py": ("stop-decision-cards.py", "stop_decision_cards.py"),
-    "awask_mailbox_drain.py": ("steer-mailbox-drain.py", "steer_mailbox_drain.py"),
-    "awask_notification_card.py": ("notification-decision-card.py",
-                                   "notification_decision_card.py"),
-}
-
 
 def hook_source_dir() -> Path:
     return Path(__file__).resolve().parent / "hooks"
@@ -150,31 +133,14 @@ def merge_settings(target: Path, dry_run: bool) -> tuple[list[str], list[str]]:
         # matching the full string would silently install a second copy every time
         # the user switched environments.
         already = False
-        conflict = ""
         for group in matchers:
             if not isinstance(group, dict):
                 continue
             for entry in group.get("hooks", []) or []:
-                if not isinstance(entry, dict):
-                    continue
-                command_text = str(entry.get("command", ""))
-                if name in command_text:
+                if isinstance(entry, dict) and name in str(entry.get("command", "")):
                     already = True
-                for other in EQUIVALENTS.get(name, ()):
-                    if other in command_text:
-                        conflict = other
         if already:
             notes.append("already wired: %s -> %s" % (event, name))
-            continue
-        if conflict:
-            # Skip rather than stack. Refusing is the conservative half of the same
-            # rule that makes this installer merge instead of replace: a config that
-            # is already doing the job is somebody's decision, not an obstacle.
-            notes.append(
-                "SKIPPED %s: %r already handles this event. Installing alongside it "
-                "would raise two cards per stop. Remove it first if you want awask's."
-                % (event, conflict)
-            )
             continue
 
         matchers.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
@@ -324,29 +290,6 @@ def self_test() -> int:
         # dry-run writes nothing.
         dry = Path(tmp) / "dry" / ".claude"
         merge_settings(dry, dry_run=True)
-        # The collision arm: an existing equivalent under a different NAME must be
-        # detected, or the installer stacks a second loop on top of a working one.
-        coll = Path(tmp) / "coll" / ".claude"
-        coll.mkdir(parents=True)
-        coll.joinpath("settings.json").write_text(
-            json.dumps({"hooks": {
-                "Stop": [{"matcher": "", "hooks": [
-                    {"type": "command",
-                     "command": "python .claude/hooks/stop-decision-cards.py"}]}],
-                "UserPromptSubmit": [{"matcher": "", "hooks": [
-                    {"type": "command",
-                     "command": "python .claude/hooks/steer-mailbox-drain.py"}]}],
-            }}),
-            encoding="utf-8",
-        )
-        added_c, notes_c = merge_settings(coll, dry_run=False)
-        check("detects an equivalent hook under a different name",
-              any("SKIPPED" in n for n in notes_c))
-        check("does not stack a second Stop hook", not any("Stop" in a for a in added_c))
-        check("does not stack a second drain", not any("UserPromptSubmit" in a for a in added_c))
-        check("still installs the event that has NO equivalent",
-              any("Notification" in a for a in added_c))
-
         check("dry run writes no settings.json", not (dry / "settings.json").exists())
         w, _ = copy_hooks(dry, dry_run=True)
         check("dry run copies no hooks", not (dry / "hooks").exists() and len(w) == 3)

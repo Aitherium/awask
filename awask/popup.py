@@ -20,7 +20,7 @@ Deliberate behaviours:
   OS frame, which on Windows is a bright title bar wrapped around a near-black
   card — the one bit of the surface we do not control was the loudest thing on
   screen. The frame is redrawn here (drag, pin, close, resize grip) rather than
-  left to the platform, with `AWASK_CHROME=native` as the escape
+  left to the platform, with `AITHER_DECISIONS_CHROME=native` as the escape
   hatch for a window manager that dislikes override-redirect windows.
 
 * **Nothing is truncated.** The first version cut facts at 200 characters and
@@ -133,7 +133,7 @@ def _fmt_age(seconds: float) -> str:
 
 def use_native_chrome() -> bool:
     """Draw our own frame unless the owner (or a hostile WM) asked otherwise."""
-    return os.getenv("AWASK_CHROME", "").strip().lower() == "native"
+    return os.getenv("AITHER_DECISIONS_CHROME", "").strip().lower() == "native"
 
 
 def _apply_dark_titlebar(root) -> None:
@@ -328,7 +328,7 @@ class CardWindow:
         if not self._headless:
             self._place()
 
-            if self._interrupts():
+            if card.urgency in ("high", "critical"):
                 self.root.lift()
                 self.root.focus_force()
             else:
@@ -851,14 +851,6 @@ class CardWindow:
 
     # ── window geometry ───────────────────────────────────────────────────────
 
-    #: Urgencies that INTERRUPT: they take focus, so they must also appear where
-    #: the eye already is. One predicate feeds both decisions on purpose -- keeping
-    #: two literals in step by hand is what produced the corner-window defect.
-    INTERRUPT_URGENCIES = ("high", "critical")
-
-    def _interrupts(self) -> bool:
-        return self.card.urgency in self.INTERRUPT_URGENCIES
-
     def _place(self) -> None:
         """Bottom-right for normal cards, centred for the ones that must interrupt."""
         root = self.root
@@ -890,14 +882,7 @@ class CardWindow:
         height = max(320, min(wanted, int(screen_h * 0.82)))
         if getattr(self, "_manual_size", None):
             width, height = self._manual_size
-        # Placement and focus MUST be graded by the same rule. They were not: focus
-        # was taken for ("high", "critical") while only "critical" was centred, so a
-        # `high` card stole focus and then drew itself in the far bottom-right corner
-        # of the display. Measured on the owner's 3840x2160 primary: a 660x783
-        # borderless panel at (3156,1305) -- the focus event is FELT and the window is
-        # never SEEN, which reads as "it moved me somewhere and no card appeared".
-        # 123 of 214 live open cards were `high`, i.e. this was the majority path.
-        if self._interrupts():
+        if self.card.urgency == "critical":
             x = (screen_w - width) // 2
             y = max(24, (screen_h - height) // 3)
         else:
@@ -1366,8 +1351,8 @@ def _live_multisession() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         cards = Path(tmp) / "cards"
         env = dict(os.environ)
-        env["AWASK_DIR"] = str(cards)
-        env["AWASK_DIR"] = str(Path(tmp) / "steer")
+        env["AITHER_DECISIONS_DIR"] = str(cards)
+        env["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
         env["PYTHONPATH"] = os.pathsep.join(
             p for p in (str(root), env.get("PYTHONPATH", "")) if p
         )
@@ -1516,8 +1501,8 @@ def _self_test() -> int:
     from awask.store import DecisionOption, DecisionSource
 
     with tempfile.TemporaryDirectory() as tmp:
-        os.environ["AWASK_DIR"] = str(Path(tmp) / "cards")
-        os.environ["AWASK_DIR"] = str(Path(tmp) / "steer")
+        os.environ["AITHER_DECISIONS_DIR"] = str(Path(tmp) / "cards")
+        os.environ["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
         store = DecisionStore(Path(tmp) / "cards")
         long_fact = (
             "the six workstreams are executing in background workflow wmxuw5c0t and I "
