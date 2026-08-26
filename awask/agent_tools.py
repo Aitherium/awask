@@ -41,6 +41,7 @@ from awask.store import (
     DecisionError,
     DecisionOption,
     DecisionSource,
+    console_tab_title,
     get_store,
 )
 
@@ -167,6 +168,7 @@ def raise_card(
             agent=agent or _agent_name(),
             cwd=cwd or os.getcwd(),
             session_pid=session_pid,
+            tab_title=console_tab_title(),
         ),
         deadline=(time.time() + deadline_seconds) if deadline_seconds > 0 else None,
     ))
@@ -211,6 +213,17 @@ async def ask_human(
     and an agent that raises them freely destroys the channel for the one that
     mattered.
 
+    NEVER for ordinary conversation. A greeting, small talk, or "how should I
+    reply to this message" is not a decision — just answer it yourself in plain
+    text. Raising a card for "the user said hello, how do I respond?" wastes the
+    owner's attention and, if the card is malformed, can burn the whole turn
+    with nothing ever said back to them.
+
+    If a call is REJECTED (this returns `{"ok": false, "error": ...}`), read the
+    error and change what it names — do not resend the same arguments. The
+    loop guard will BLOCK an identical retry after a couple of attempts, and
+    a blocked call still counts as a turn you never answered the user in.
+
     Args:
         title: One line, the whole ask. If it needs two, it is two cards.
         summary: One or two lines of what the owner needs in order to decide.
@@ -218,10 +231,12 @@ async def ask_human(
             "key|Label|what happens if you pick it" per line. A consequence is
             what makes a card answerable without reading the code.
         facts: What you MEASURED, one per line — never a guess.
-        urgency: low | normal | high | critical. high and critical take focus.
-        default: The option key applied if the owner never answers. REQUIRED for
-            a real decision; the store refuses a card without one.
-        recommend: The option key you would pick. Say it — you did the work.
+        urgency: low | normal | high | critical (exact string — not a number).
+        default: The option's KEY (not its label/text) applied if the owner
+            never answers. REQUIRED for a real decision; the store refuses a
+            card without one. If you passed `options` as plain strings with no
+            "|", the key IS that string verbatim — match it exactly.
+        recommend: The option key (not the label) you would pick.
         wait_seconds: Block until answered, up to this long. 0 returns at once
             and you poll with check_human.
         deadline_seconds: Apply the default automatically after this long.
@@ -365,6 +380,11 @@ def _self_test() -> int:
         os.environ["AITHER_DECISIONS_DIR"] = str(Path(tmp) / "cards")
         os.environ["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
         os.environ["AITHER_DECISIONS_POPUP"] = "0"   # no window in a self-test
+        # Never type into a REAL console from a self-test: the temp card still
+        # carries the live session's pid, so with console input armed the
+        # delivery typed "Answer: b ... do it tonight" into the OWNER's
+        # terminal (observed live 2026-08-25).
+        os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = "0"
         os.environ["AITHER_SESSION_ID"] = "agent-selftest"
         import awask.store as store_module
 

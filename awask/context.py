@@ -108,8 +108,8 @@ def _run(argv: list[str], cwd: str = "", timeout: float = SOURCE_TIMEOUT) -> tup
     CREATE_NO_WINDOW is load-bearing, not cosmetic: the card window is spawned
     DETACHED and therefore has no console of its own, so any console program it
     starts without this flag makes Windows allocate a NEW one and a window
-    flashes on the owner's desktop — the focus-stealing class this
-    flag exists to prevent.
+    flashes on the owner's desktop (the focus-stealing console class, asserted
+    by the decision-card surface checker).
     """
     try:
         proc = subprocess.run(  # noqa: S603 - fixed argv, no shell

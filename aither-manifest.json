@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1",
+  "name": "awask",
+  "description": "Your agent asks you a question \u2014 and acts on your answer.",
+  "url": "https://aitherium.github.io/awask/",
+  "repository": "https://github.com/Aitherium/awask",
+  "kind": "tool",
+  "status": "unpublished",
+  "adopt": "Ask a human a question from a script, and keep working on their answer.",
+  "pairs_with": [
+    "awdk",
+    "awrelay",
+    "awmail",
+    "awsh",
+    "awnest"
+  ],
+  "includes": [],
+  "speaks_to": null,
+  "generated_at": "2026-08-23T17:45:50Z"
+}

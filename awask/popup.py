@@ -42,7 +42,7 @@ Deliberate behaviours:
 * **Graded focus.** ``critical``/``high`` take focus, because that is the whole
   point of the tier. ``normal`` appears on top WITHOUT stealing focus, so a card
   raised while you are mid-sentence cannot eat the sentence — the keystroke-theft
-  failure this project has already been bitten by.
+  failure of quality gate 1t, which this repo has already been bitten by.
 
 * **Keyboard first.** ``1``–``9`` pick an option, ``Enter`` takes the
   recommendation, ``Ctrl+Enter`` sends the reply box, ``Esc`` snoozes,
@@ -187,8 +187,8 @@ class CardWindow:
         #: the desktop and ate the owner's keystrokes: reported live on
         #: 2026-08-10 as "one popup then it completely disappeared immediately",
         #: twice, while this file's own tests were running. That is the
-        #: focus-stealing class this headless flag exists to
-        #: stop, produced by the very tests for the surface it protects —
+        #: focus-stealing console class the decision-card surface checker exists
+        #: to stop — produced by the checker for the surface those rules protect —
         #: and the skill tells people to run it, so it was everyone's desktop.
         self._headless = headless
         self.store = store
@@ -725,7 +725,16 @@ class CardWindow:
         row.pack(fill="x", pady=(16, 0))
         row.bind("<MouseWheel>", wheel)
 
-        tab = (caps.get("tab") or "").strip()
+        # The card's RECORDED tab title (captured inside the raising session's
+        # console) beats the located window title: Windows Terminal's window
+        # title is whatever tab is ACTIVE, so the located one names the tab the
+        # owner happened to be looking at — measured 2026-08-25, a card about
+        # this session confidently pointed the owner at an unrelated tab. A
+        # window-derived title is therefore shown WITH its uncertainty.
+        recorded = (card.source.tab_title or "").strip()
+        located = (caps.get("tab") or "").strip()
+        tab = recorded or (f"{located}  (window's active tab — may not be this card's)"
+                           if located else "")
         tk.Label(row, text=("THE TERMINAL THIS IS ABOUT" if tab else "THIS SESSION"),
                  bg=BG, fg=MUTED, font=(UI, 8, "bold"), anchor="w").pack(fill="x")
         if tab:
@@ -1059,7 +1068,8 @@ class CardWindow:
     def _focus_terminal(self) -> None:
         from awask import terminal
 
-        ok, why = terminal.focus(self.card.source.session_pid)
+        ok, why = terminal.focus(self.card.source.session_pid,
+                                 tab_hint=self.card.source.tab_title)
         self._flash(why, GREEN if ok else GOLD)
 
     def _open_terminal(self) -> None:
@@ -1128,9 +1138,26 @@ class CardWindow:
         # feature only worked in one tab. That is the silent-no-op pattern of
         # `.claude/rules/security-review-patterns.md` §5 living inside the
         # surface whose entire job is to not lose an ask.
+        # Polling every second must not cost a full-store parse: with a large
+        # store (measured 2026-08-25: 1,170 card files) re-reading every JSON
+        # each tick starved the Tk mainloop and the window stopped responding
+        # to drags and clicks entirely. The directory signature is checked
+        # first; the full re-list runs only when something changed — plus a
+        # periodic full pass so a deadline can expire in a store nothing is
+        # writing to.
+        self._tick_count = getattr(self, "_tick_count", 0) + 1
         try:
-            fresh = self._refresh_queue()
-        except OSError:
+            sig = self.store.signature()
+        except Exception:
+            sig = None
+        stale = sig is None or sig != getattr(self, "_store_sig", None)
+        if stale or self._tick_count % 15 == 0:
+            self._store_sig = sig
+            try:
+                fresh = self._refresh_queue()
+            except OSError:
+                fresh = []
+        else:
             fresh = []
         if fresh and {c.id for c in fresh} != {c.id for c in self.queue}:
             arrived = [c for c in fresh if c.id not in {q.id for q in self.queue}]
@@ -1344,7 +1371,7 @@ def _live_multisession() -> int:
     problems: list[str] = []
     # CREATE_NO_WINDOW. Both spawns below are console programs, and this probe
     # can itself be launched from the detached card path — where a child with no
-    # console gets a NEW one and flashes on the desktop. A
+    # console gets a NEW one and flashes on the desktop (gate 1t's class). A
     # check for focus-stealing windows that opened one would be self-defeating.
     no_window = 0x08000000 if os.name == "nt" else 0
 
@@ -1503,6 +1530,8 @@ def _self_test() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["AITHER_DECISIONS_DIR"] = str(Path(tmp) / "cards")
         os.environ["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
+        # A self-test must never type into a real console.
+        os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = "0"
         store = DecisionStore(Path(tmp) / "cards")
         long_fact = (
             "the six workstreams are executing in background workflow wmxuw5c0t and I "

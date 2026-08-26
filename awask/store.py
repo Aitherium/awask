@@ -129,6 +129,14 @@ class DecisionSource:
     #: Where a live steer can be delivered: "harness" (a daemon PTY session),
     #: "adk" (an in-flight /chat/stream turn) or "" (mailbox only).
     steer_channel: str = ""
+    #: The raising session's OWN console (tab) title, captured at raise time via
+    #: GetConsoleTitleW from inside the session's ConPTY. Windows Terminal hosts
+    #: every tab in ONE window whose title is whatever tab is ACTIVE, so a title
+    #: resolved later from the window names the tab the owner happened to be
+    #: looking at — measured 2026-08-25, a card about this session told the
+    #: owner to go find "Jgames portal testing and design". Empty when the
+    #: raiser had no console or is not on Windows.
+    tab_title: str = ""
     #: The session transcript, so the card's context is EXPLORABLE rather than
     #: merely asserted. An anchor, not a snapshot: the panel harvests at click
     #: time (awask.context), because a snapshot taxes every raise and is
@@ -149,8 +157,38 @@ class DecisionSource:
             pid=int(raw.get("pid") or 0),
             session_pid=int(raw.get("session_pid") or 0),
             steer_channel=str(raw.get("steer_channel") or ""),
+            tab_title=str(raw.get("tab_title") or ""),
             transcript=str(raw.get("transcript") or ""),
         )
+
+
+def console_tab_title() -> str:
+    """This process's console (tab) title — the per-tab OSC title the hosting
+    app set, NOT the terminal window's title. Reading the window title instead
+    answers "which tab is the owner looking at right now", which is a different
+    and usually wrong question. Empty off-Windows, without a console, or on any
+    failure — an empty hint is honest; a guessed one misdirects the owner."""
+    explicit = os.getenv("AITHER_TAB_TITLE", "").strip()
+    if explicit:
+        return explicit
+    if os.name != "nt":
+        return ""
+    try:
+        import ctypes
+
+        buffer = ctypes.create_unicode_buffer(512)
+        copied = ctypes.windll.kernel32.GetConsoleTitleW(buffer, 512)
+        title = buffer.value.strip() if copied else ""
+    except Exception:
+        return ""
+    # A freshly-spawned child clobbers the console title with its OWN exe path
+    # (measured live: a raise through the Bash tool reads
+    # "C:\Program Files\Git\...ash.exe"). That is a launch artifact, not a
+    # tab name — returning it would misdirect the owner, which is worse than
+    # returning nothing.
+    if title.lower().endswith(".exe") or title.lower().endswith(".cmd"):
+        return ""
+    return title
 
 
 @dataclass
@@ -188,7 +226,7 @@ class DecisionNote:
         )
 
 
-# ── decidability ──────────────────────────────────────────────────────
+# ── decidability ────────────────────────────────────────────────────────────────
 # A card exists to make an ask DECIDABLE. Two shapes defeat that, and both used to
 # be storable:
 #
@@ -501,6 +539,37 @@ class DecisionStore:
             return None
         card = DecisionCard.from_dict(raw)
         return card if card.id else None
+
+    def signature(self) -> tuple:
+        """Cheap change token: (file count, newest mtime_ns, total bytes).
+
+        Computed from directory metadata alone — no card file is opened — so a
+        window can poll every second without parsing the whole store. Any
+        create/answer/steer/cancel rewrites a file (mtime moves) and a sweep
+        changes the count. An unreadable directory returns a token that never
+        equals a real one, so the caller falls back to a full re-list rather
+        than treating silence as "nothing changed".
+        """
+        count = 0
+        latest = 0
+        total = 0
+        try:
+            with os.scandir(self.path) as entries:
+                for entry in entries:
+                    name = entry.name
+                    if not (name.startswith("d-") and name.endswith(".json")):
+                        continue
+                    try:
+                        info = entry.stat()
+                    except OSError:
+                        continue
+                    count += 1
+                    total += info.st_size
+                    if info.st_mtime_ns > latest:
+                        latest = info.st_mtime_ns
+        except OSError:
+            return (-1, 0, 0)
+        return (count, latest, total)
 
     def list(
         self,

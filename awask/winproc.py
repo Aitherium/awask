@@ -43,8 +43,8 @@ SHIM_NAMES = frozenset({
 
 #: Processes that host a visible terminal window. Used only to LABEL what was
 #: found — the search itself is by "has a visible top-level window", because a
-#: name allowlist is exactly the false-positive machine that a check for
-#: focus-stealing launchers had to rip out to stop crying wolf.
+#: name allowlist is exactly the false-positive machine that quality gate 1t
+#: had to rip out of check_scheduled_task_windows.
 TERMINAL_NAMES = frozenset({
     "windowsterminal.exe", "wt.exe", "conhost.exe", "openconsole.exe",
     "powershell.exe", "pwsh.exe", "cmd.exe", "alacritty.exe", "wezterm-gui.exe",

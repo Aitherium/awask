@@ -45,7 +45,11 @@ from awask.store import (
     DecisionOption,
     DecisionSource,
     DecisionStore,
+    console_tab_title,
 )
+
+#: Spawn helpers without allocating a console (the focus-stealing class).
+_CREATE_NO_WINDOW = 0x08000000
 
 _DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*$", re.IGNORECASE)
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 60}
@@ -92,9 +96,9 @@ def _git_branch(cwd: str) -> str:
     # in a DETACHED process, which has NO console — so when it spawns a console
     # program without this flag, Windows allocates a NEW console for the child
     # and a window flashes on the owner's desktop. Every single card raise did
-    # that, on a machine where the whole point of the flag is that a
-    # console on the interactive desktop TAKES FOCUS and eats
-    # keystrokes. Found while auditing a report of terminal-window spam.
+    # that, on a machine where the whole point of the flag is that a console on
+    # the interactive desktop TAKES FOCUS and eats keystrokes. Found while
+    # auditing a report of terminal-window spam.
     extra: dict = {"creationflags": _CREATE_NO_WINDOW} if os.name == "nt" else {}
     try:
         proc = subprocess.run(
@@ -198,6 +202,7 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
             cwd=cwd,
             branch=args.branch or _git_branch(cwd),
             session_pid=session_pid,
+            tab_title=console_tab_title(),
             transcript=args.transcript or "",
         ),
         deadline=deadline,
@@ -313,7 +318,32 @@ def cmd_answer(args: argparse.Namespace, store: DecisionStore) -> int:
         # like one that did.
         print("no session on this card — nothing to steer; the answer is recorded only",
               file=sys.stderr)
+    _post_relay_note(f"answered {card.id}: {card.answer} (via {args.via})")
     return 0
+
+
+def _post_relay_note(text: str) -> None:
+    """Best-effort note to the sessions' relay channel (#agents).
+
+    The desk is the cockpit, awask is the plane, and awrelay is the channel the
+    fleet coordinates on — an answer nobody else sees is an answer half
+    delivered (owner: "unify and marry these awask/awdesk + decision cards").
+    One fire-and-forget spawn, never a dependency: the relay being down must
+    not change what an answer does. Detached + CREATE_NO_WINDOW + timeout so it
+    can neither block the answer nor flash a console (gate 1t).
+    """
+    if os.environ.get("AWASK_RELAY_NOTES", "1").strip().lower() in ("0", "false", "no", "off"):
+        return
+    try:
+        subprocess.Popen(
+            ["awrelay", "send", "#agents", text[:800]],
+            creationflags=_CREATE_NO_WINDOW if os.name == "nt" else 0,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+    except OSError:
+        return  # no awrelay on PATH — the answer stands, the note is lost
 
 
 def cmd_steer(args: argparse.Namespace, store: DecisionStore) -> int:
@@ -348,6 +378,7 @@ def cmd_cancel(args: argparse.Namespace, store: DecisionStore) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     print(f"{card.id} withdrawn")
+    _post_relay_note(f"withdrew {card.id}")
     return 0
 
 
@@ -398,9 +429,33 @@ def _self_test() -> int:
             print(f"  FAIL {name} {detail}")
             failures.append(name)
 
+    # The relay note is fire-and-forget by contract: it must attempt the spawn
+    # with the right argv, and the env gate must turn it fully off.
+    calls: list[list[str]] = []
+
+    class _FakePopen:  # noqa: SIM115 - test double
+        def __init__(self, argv, **kwargs):
+            calls.append(list(argv))
+
+    original_popen = subprocess.Popen
+    subprocess.Popen = _FakePopen  # type: ignore[assignment]
+    try:
+        _post_relay_note("answered d-x: ack")
+        check("a relay note spawns awrelay send to #agents",
+              bool(calls) and calls[-1][:3] == ["awrelay", "send", "#agents"])
+        os.environ["AWASK_RELAY_NOTES"] = "0"
+        calls.clear()
+        _post_relay_note("muted")
+        check("AWASK_RELAY_NOTES=0 silences the note", not calls)
+    finally:
+        subprocess.Popen = original_popen
+        os.environ.pop("AWASK_RELAY_NOTES", None)
+
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["AITHER_DECISIONS_DIR"] = str(Path(tmp) / "cards")
         os.environ["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
+        # A self-test must never type into a real console.
+        os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = "0"
         store = DecisionStore(Path(tmp) / "cards")
 
         # 1. a decision card with no options is refused

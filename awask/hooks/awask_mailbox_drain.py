@@ -39,6 +39,56 @@ def steer_root() -> Path:
     return Path(env) if env else (Path.home() / ".aither" / "steer")
 
 
+def _notify_ledger(session_id: str) -> Path:
+    """The per-session ledger the Notification hook writes each waiting-card id to.
+    Shape mirrors ``awask_notification_card.session_ledger`` — the two hooks share
+    a directory convention, not an import, because either may be installed alone."""
+    env = os.getenv("AITHER_DECISIONS_DIR", "").strip()
+    base = Path(env) if env else (Path.home() / ".aither" / "decisions")
+    safe = "".join(ch for ch in session_id if ch.isalnum() or ch in "._-")
+    return base / "_notify" / "by-session" / ("%s.ids" % (safe or "unknown"))
+
+
+def cancel_waiting_cards(session_id: str) -> int:
+    """The owner just typed into this session, so any 'agent is waiting on you'
+    card raised for it is now FALSE. Cancel them.
+
+    Without this the waiting-cards accumulate as open forever — measured
+    2026-08-25, 643 of 673 open cards were stale waiting notices, which drowned
+    the real queue and froze the popup. A waiting notice is transient state;
+    this is the half of its lifecycle the raise cannot provide.
+    """
+    if not session_id or not _SESSION_RE.match(session_id):
+        return 0
+    ledger = _notify_ledger(session_id)
+    if not ledger.is_file():
+        return 0
+    try:
+        ids = ledger.read_text(encoding="utf-8").split()
+    except OSError:
+        return 0
+    cancelled = 0
+    try:
+        from awask.store import get_store
+        store = get_store()
+        for card_id in ids:
+            card = store.get(card_id)
+            if card is not None and card.is_open:
+                try:
+                    store.cancel(card_id,
+                                 note="the owner responded in the session; the wait is over")
+                    cancelled += 1
+                except Exception:
+                    continue
+    except Exception:
+        return cancelled
+    try:
+        ledger.unlink()
+    except OSError as exc:
+        sys.stderr.write("[warn] awask_mailbox_drain: ledger unlink: %s\n" % exc)
+    return cancelled
+
+
 def read_payload() -> dict:
     try:
         raw = sys.stdin.read()
@@ -87,6 +137,11 @@ def drain(session_id: str) -> list:
 def main() -> int:
     payload = read_payload()
     session_id = str(payload.get("session_id") or "").strip()
+    try:
+        cancel_waiting_cards(session_id)
+    except Exception as exc:
+        # Closing a stale notice must never cost the owner's answer below.
+        sys.stderr.write("[warn] awask_mailbox_drain: cancel_waiting_cards: %s\n" % exc)
     answers = drain(session_id)
     if not answers:
         return 0
@@ -136,6 +191,40 @@ def self_test() -> int:
         drain("sess-1")
         delivered = sorted((box / "delivered").glob("*.md"))
         check("a same-named second answer is kept, not clobbered", len(delivered) == 2)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["AITHER_DECISIONS_DIR"] = tmp
+        try:
+            from awask.store import (
+                DecisionCard,
+                DecisionOption,
+                DecisionSource,
+                DecisionStore,
+            )
+
+            store = DecisionStore(Path(tmp))
+            card = DecisionCard(
+                id="",  # minted by the store on create
+                title="Your agent is waiting on you",
+                options=[DecisionOption(key="ack", label="ok", consequence="waits")],
+                default_key="ack",
+                source=DecisionSource(session_id="sess-w"),
+            )
+            store.create(card)
+            ledger = _notify_ledger("sess-w")
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            ledger.write_text(card.id + "\n", encoding="utf-8")
+
+            check("a resume cancels the session's waiting card",
+                  cancel_waiting_cards("sess-w") == 1)
+            got = store.get(card.id)
+            check("the card is really closed, not just counted",
+                  got is not None and got.status == "cancelled")
+            check("the ledger is consumed so a second resume is a no-op",
+                  cancel_waiting_cards("sess-w") == 0)
+            check("a traversal session id cancels nothing", cancel_waiting_cards("../../etc") == 0)
+        except ImportError:
+            check("awask importable for the cancel-on-resume arms", False)
 
     print("self-test", "passed" if ok else "FAILED")
     return 0 if ok else 1

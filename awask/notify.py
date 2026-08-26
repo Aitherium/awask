@@ -10,7 +10,7 @@ bitten this repo:
 
 1. **It must not steal focus.** Spawning ``powershell.exe`` from Python allocates a
    console on the interactive desktop that takes focus and eats keystrokes for as
-   long as it lives. Note that
+   long as it lives. This is the focus-stealing console class — and note that
    ``-WindowStyle Hidden`` does NOT fix it: the console is allocated
    before the shell can hide it, so it flashes every single time. The fix is the
    ``CREATE_NO_WINDOW`` creation flag, which prevents allocation outright.
@@ -141,7 +141,7 @@ def _windows_toast(title: str, body: str, *, urgency: str = "normal") -> Optiona
             errors="replace",
             timeout=20,
             # THE line that matters: no console is allocated, so nothing takes
-            # focus. See the module docstring.
+            # focus. See the module docstring and quality gate 1t.
             creationflags=_CREATE_NO_WINDOW,
         )
     except FileNotFoundError:
@@ -245,7 +245,7 @@ def open_card_window(card_id: str) -> Optional[str]:
     }
     if os.name == "nt":
         # DETACHED_PROCESS | CREATE_NO_WINDOW: no console is allocated, so the
-        # only thing that appears is the card itself.
+        # only thing that appears is the card itself (quality gate 1t).
         kwargs["creationflags"] = 0x00000008 | 0x08000000
     else:
         kwargs["start_new_session"] = True
