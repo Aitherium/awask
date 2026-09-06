@@ -23,7 +23,7 @@ is present. ``CREDENTIAL_ANSWER`` is one constant string, so without a
 receipt every credential card that ever closed is indistinguishable from
 every other, including one closed by somebody who stored nothing.
 
-Why the masked prompt must be the ONLY door (DC008): before this module
+Why the masked prompt must be the ONLY door: before this module
 existed, ``store.answer()`` accepted free text on an optionless credential
 card — persisting the value in the card's durable JSON, which the daemon
 serves over HTTP, the popup renders, and the steering mailbox copies into
@@ -84,8 +84,8 @@ def _push_via_exec(key: str, value: str) -> tuple[bool, str]:
     if not template:
         return False, "no " + SECRETS_EXEC_ENV
     # 🚨 posix=False on Windows, and it is load-bearing. shlex's POSIX mode
-    # treats a backslash as an ESCAPE, so `C:\AitherOS-Fresh\...\tool.py`
-    # parsed to `C:AitherOS-Freshtool.py` — a path that does not exist. The
+    # treats a backslash as an ESCAPE, so Windows paths with backslashes get
+    # mangled (backslash + colon becomes just colon) — a path that does not exist. The
     # writer then exited 2 and the whole ladder reported "exited 2", which
     # reads as the vault refusing rather than as the command never being
     # spelled correctly. Measured on the first live run of this leg.
@@ -95,10 +95,10 @@ def _push_via_exec(key: str, value: str) -> tuple[bool, str]:
     # a path with a space still resolves.
     argv = [a[1:-1] if len(a) > 1 and a[0] == a[-1] and a[0] in "\"'" else a
             for a in argv]
-    # CREATE_NO_WINDOW (DC007): the card path runs DETACHED and a detached
+    # CREATE_NO_WINDOW: the card path runs DETACHED and a detached
     # process has NO console, so Windows allocates a NEW one for any
     # console-subsystem child — a window FLASHES and takes focus on every
-    # single vault write. encoding= (PQ009) because `text=True` alone decodes
+    # single vault write. encoding= (explicit UTF-8) because `text=True` alone decodes
     # with the locale codec (cp1252 here), and a UnicodeDecodeError is a
     # ValueError, which the OSError/SubprocessError guard below does not
     # catch — the tool would crash rather than report the leg as failed.
@@ -192,10 +192,10 @@ def _lockbox_write(scope: str, key: str, value: str) -> tuple[bool, str]:
     """Write to the lockbox that owns `scope`. Returns ``(ok, why)``.
 
     Reached over HTTP rather than by importing the monorepo's
-    ``lib.lockbox``: adk ships to strangers, where that import is a hard
-    ``ModuleNotFoundError`` (gate 1zi ADK002). The two endpoints are the ones
-    the platform's own MCP tools call — ``PUT /lockbox/user/{name}`` and
-    ``POST /workspace-secrets/set``.
+    ``lib.lockbox``: adk ships to strangers, where that import would fail
+    (the monorepo's lockbox module is not in the public package). The two
+    endpoints are the ones the platform's own MCP tools call — ``PUT
+    /lockbox/user/{name}`` and ``POST /workspace-secrets/set``.
 
     🚨 The response BODY is never put in the returned detail, even on an
     error. A rejecting endpoint can echo the request it rejected, and this
