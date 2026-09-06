@@ -114,33 +114,27 @@ def locate(pid: int) -> TerminalTarget:
     return target
 
 
-def focus(pid: int, tab_hint: str = "") -> tuple[bool, str]:
-    """Bring the session's terminal to the front. ``(ok, what happened)``.
-
-    ``tab_hint`` is the raising session's OWN tab title (recorded at raise time,
-    see DecisionSource.tab_title). The located window's title is only a
-    fallback: under Windows Terminal it names whatever tab is ACTIVE, which is
-    usually the one the owner is already looking at — precisely the tab this
-    card is NOT about.
-    """
+def focus(pid: int) -> tuple[bool, str]:
+    """Bring the session's terminal to the front. ``(ok, what happened)``."""
     target = locate(pid)
     if not target.focusable:
         return False, target.describe()
     ok = winproc.focus_window(target.hwnd)
     if not ok:
         return False, "Windows refused to change the foreground window"
-    tab = (tab_hint or "").strip()
-    if tab:
-        return True, f"focused — look for the tab: {tab}"
-    located = target.title.strip()
-    if located:
-        return True, (f"focused — the window was showing: {located} "
-                      "(this card's tab may be another one)")
-    return True, "focused the terminal"
+    tab = target.title.strip()
+    return True, (f"focused — look for the tab: {tab}" if tab else "focused the terminal")
 
 
-def open_terminal(cwd: str) -> tuple[bool, str]:
-    """Open a NEW terminal at ``cwd``. Not the same tab, and it says so."""
+def open_terminal(cwd: str, app: str = "") -> tuple[bool, str]:
+    """Open a NEW terminal at ``cwd``. Not the same tab, and it says so.
+
+    ``app`` selects WHAT runs in it. The default is the platform's own shell —
+    the awsh/AitherShell daily driver (``aither``, npm @aitherium/awsh) when
+    installed, so "Open a terminal here" starts a live fleet session, not a
+    bare prompt (owner 2026-08-29: cards must manage the real shell, not just
+    Claude tabs). Pass ``app="shell"`` for a plain terminal.
+    """
     directory = cwd or os.getcwd()
     if not os.path.isdir(directory):
         return False, f"no such directory: {directory}"
@@ -150,6 +144,10 @@ def open_terminal(cwd: str) -> tuple[bool, str]:
     candidates: list[list[str]] = []
     if os.name == "nt":
         if shutil.which("wt.exe"):
+            if app != "shell" and shutil.which("aither"):
+                # The awsh shell, live in a new tab at the card's directory —
+                # the "Open a terminal here" that starts a FLEET session.
+                candidates.append(["wt.exe", "-d", directory, "aither"])
             candidates.append(["wt.exe", "-d", directory])
         candidates.append(["cmd.exe", "/c", "start", "", "powershell.exe", "-NoExit",
                            "-Command", f"Set-Location -LiteralPath '{directory}'"])
@@ -270,21 +268,16 @@ def type_into_console(pid: int, text: str, *, submit: bool = True) -> tuple[bool
         _fields_ = [("EventType", wintypes.WORD), ("Event", _EVENT)]
 
     kernel32 = ctypes.windll.kernel32
-
-    def _records_for(chars: str):
-        built = (_InputRecord * (len(chars) * 2))()
-        for index, char in enumerate(chars):
-            for offset, down in ((0, True), (1, False)):
-                record = built[index * 2 + offset]
-                record.EventType = 1  # KEY_EVENT
-                record.Event.KeyEvent.bKeyDown = down
-                record.Event.KeyEvent.wRepeatCount = 1
-                record.Event.KeyEvent.wVirtualKeyCode = 0x0D if char == "\r" else 0
-                record.Event.KeyEvent.wVirtualScanCode = 0x1C if char == "\r" else 0
-                record.Event.KeyEvent.uChar.UnicodeChar = char
-        return built
-
-    records = _records_for(text)
+    payload = text if not submit else text + "\r"
+    records = (_InputRecord * (len(payload) * 2))()
+    for index, char in enumerate(payload):
+        for offset, down in ((0, True), (1, False)):
+            record = records[index * 2 + offset]
+            record.EventType = 1  # KEY_EVENT
+            record.Event.KeyEvent.bKeyDown = down
+            record.Event.KeyEvent.wRepeatCount = 1
+            record.Event.KeyEvent.wVirtualKeyCode = 0x0D if char == "\r" else 0
+            record.Event.KeyEvent.uChar.UnicodeChar = char
 
     kernel32.FreeConsole()
     if not kernel32.AttachConsole(int(pid)):
@@ -300,26 +293,9 @@ def type_into_console(pid: int, text: str, *, submit: bool = True) -> tuple[bool
         ok = kernel32.WriteConsoleInputW(
             handle, records, len(records), ctypes.byref(written)
         )
-        if ok and submit:
-            # Enter goes in a SEPARATE write, after a pause. Appending "\r" to
-            # the same burst makes a TUI with paste detection (Claude Code
-            # included) treat the whole thing as a bracketed paste, so the
-            # Enter became a literal newline in the composer and the owner had
-            # to press Enter themselves — the manual last-mile this control
-            # exists to remove (reported live 2026-08-25). The pause lets the
-            # paste heuristic close, so the Enter arrives as a keystroke.
-            import time as _time
-
-            _time.sleep(0.20)
-            enter = _records_for("\r")
-            ok = kernel32.WriteConsoleInputW(
-                handle, enter, len(enter), ctypes.byref(written)
-            )
         kernel32.CloseHandle(handle)
         if not ok:
             return False, "WriteConsoleInput was rejected"
-        if submit:
-            return True, f"typed {len(text)} chars into the session and pressed Enter"
         return True, f"typed {len(text)} chars into the session"
     finally:
         kernel32.FreeConsole()
@@ -377,7 +353,7 @@ def _spawn_reader(conpty: bool) -> tuple[int, "Path", str]:
         # THIS OPENS A REAL TAB AND TAKES FOCUS. There is no hidden ConPTY: a
         # pseudo-console needs a terminal attached to it, and that terminal is a
         # window. Running it a few times in a row is indistinguishable from the
-        # focus-stealing spam quality gate 1t exists to stop — which is exactly
+        # focus-stealing spam this exists to stop — which is exactly
         # what it looked like to the owner on 2026-08-10. Hence the extra
         # acknowledgement flag on the CLI, and hence it is in no sweep, no
         # self-test and no routine.

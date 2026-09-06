@@ -10,7 +10,7 @@ bitten this repo:
 
 1. **It must not steal focus.** Spawning ``powershell.exe`` from Python allocates a
    console on the interactive desktop that takes focus and eats keystrokes for as
-   long as it lives. This is the focus-stealing console class — and note that
+   long as it lives. Note that
    ``-WindowStyle Hidden`` does NOT fix it: the console is allocated
    before the shell can hide it, so it flashes every single time. The fix is the
    ``CREATE_NO_WINDOW`` creation flag, which prevents allocation outright.
@@ -110,10 +110,20 @@ def _xml_escape(text: str) -> str:
 
 
 def _windows_toast(title: str, body: str, *, urgency: str = "normal") -> Optional[str]:
-    """Raise a native Windows toast. Returns an error string, or None on success."""
-    scenario = ' scenario="urgent"' if urgency == "critical" else ""
+    """Raise a native Windows toast. Returns an error string, or None on success.
+
+    Never mark the toast urgent: Windows 11 answers an urgent toast with a
+    DND-bypass "Allow important notifications" permission dialog on every
+    raise (measured 2026-08-29) — the popup/DM planes carry critical cards;
+    the toast is decoration and must not declare itself important.
+    """
+    # The toast is DECORATION and is not clickable: no activationType/launch.
+    # A launch URL with no registered protocol handler turns a click into
+    # Windows' "You'll need a new app to open this" error — measured 2026-08-30
+    # on the owner's box with `launch='aither-decide://open'` and no handler.
+    # The card WINDOW is the clickable channel; a toast cannot host controls.
     xml = (
-        f"<toast{scenario} activationType='protocol' launch='aither-decide://open'>"
+        "<toast>"
         "<visual><binding template='ToastGeneric'>"
         f"<text>{_xml_escape(title)}</text>"
         f"<text>{_xml_escape(body)}</text>"
@@ -141,7 +151,7 @@ def _windows_toast(title: str, body: str, *, urgency: str = "normal") -> Optiona
             errors="replace",
             timeout=20,
             # THE line that matters: no console is allocated, so nothing takes
-            # focus. See the module docstring and quality gate 1t.
+            # focus. See the module docstring.
             creationflags=_CREATE_NO_WINDOW,
         )
     except FileNotFoundError:
@@ -245,7 +255,7 @@ def open_card_window(card_id: str) -> Optional[str]:
     }
     if os.name == "nt":
         # DETACHED_PROCESS | CREATE_NO_WINDOW: no console is allocated, so the
-        # only thing that appears is the card itself (quality gate 1t).
+        # only thing that appears is the card itself.
         kwargs["creationflags"] = 0x00000008 | 0x08000000
     else:
         kwargs["start_new_session"] = True

@@ -42,7 +42,7 @@ Deliberate behaviours:
 * **Graded focus.** ``critical``/``high`` take focus, because that is the whole
   point of the tier. ``normal`` appears on top WITHOUT stealing focus, so a card
   raised while you are mid-sentence cannot eat the sentence — the keystroke-theft
-  failure of quality gate 1t, which this repo has already been bitten by.
+  failure this project has already been bitten by.
 
 * **Keyboard first.** ``1``–``9`` pick an option, ``Enter`` takes the
   recommendation, ``Ctrl+Enter`` sends the reply box, ``Esc`` snoozes,
@@ -92,6 +92,9 @@ KIND_HEADER = {
     "decision": "DECISION NEEDED",
     "blocked": "BLOCKED ON YOU",
     "info": "YOU SHOULD KNOW",
+    # A credential card carried no header of its own, so it announced itself
+    # as "DECISION NEEDED" while offering nothing to decide — see _content().
+    "credential": "SECRET NEEDED",
 }
 
 UI = "Segoe UI"
@@ -187,8 +190,8 @@ class CardWindow:
         #: the desktop and ate the owner's keystrokes: reported live on
         #: 2026-08-10 as "one popup then it completely disappeared immediately",
         #: twice, while this file's own tests were running. That is the
-        #: focus-stealing console class the decision-card surface checker exists
-        #: to stop — produced by the checker for the surface those rules protect —
+        #: focus-stealing class this headless flag exists to
+        #: stop, produced by the very tests for the surface it protects —
         #: and the skill tells people to run it, so it was everyone's desktop.
         self._headless = headless
         self.store = store
@@ -460,7 +463,20 @@ class CardWindow:
                 mark = "sent" if note.delivered_live else "queued"
                 label(f"“{note.text}”  ({mark})", fg=GREEN, font=(UI, 9), pad=(3, 0))
 
-        if card.options:
+        if (card.kind or "").strip().lower() == "credential":
+            # 🚨 THIS BRANCH DID NOT EXIST, and its absence was silent.
+            # A credential card carries NO options by design — store.py
+            # refuses them, because an option list would put the secret in the
+            # card's durable JSON. So every credential card fell through to
+            # the optionless `else` below and rendered as
+            # "Nothing to click — this is context, not a question."
+            # The card announced itself, looked correct, and could not do the
+            # one thing it was raised for; the only working door was a
+            # terminal command, which is precisely the trip the card exists to
+            # remove. Measured live 2026-09-05 on d-66n8 (GITHUB_CLIENT_SECRET)
+            # with 4 credential cards sitting in a 574-deep open queue.
+            self._credential_row(body, card, wheel)
+        elif card.options:
             opts = tk.Frame(body, bg=BG)
             opts.pack(fill="x", pady=(16, 0))
             opts.bind("<MouseWheel>", wheel)
@@ -475,6 +491,151 @@ class CardWindow:
             self._plain_button(body, "Got it — dismiss", self._dismiss, primary=True)
 
         self._terminal_row(body, card, wheel)
+
+    def _credential_row(self, body, card, wheel) -> None:
+        """A masked field whose value goes to the vault and nowhere else.
+
+        The value's whole journey is: this widget -> ``secure_prompt.
+        vault_credential`` -> the store that owns the card's
+        ``credential_scope`` (platform vault, user or workspace
+        lockbox). It is never put
+        in a card field, never passed to ``store.steer`` (which copies text
+        into session transcripts), never logged, and never sent as the answer
+        — ``store.answer`` takes the CREDENTIAL_ANSWER marker only, and the
+        push happens before it.
+
+        The push is done on a WORKER THREAD. It is a network round trip, and
+        doing it inline freezes the Tk event loop: the window stops
+        repainting, which reads as the app hanging on the one interaction
+        where the owner most needs to know what happened.
+        """
+        tk = self.tk
+        label_text = card.secret_name or card.id
+
+        frame = tk.Frame(body, bg=BG)
+        frame.pack(fill="x", pady=(16, 0))
+        frame.bind("<MouseWheel>", wheel)
+
+        scope = (card.credential_scope or "platform").strip().lower()
+        where = {
+            "platform": "the PLATFORM vault — every platform admin can read it",
+            "user": "your PERSONAL lockbox — nobody else can read it",
+            "workspace": "the WORKSPACE lockbox — this workspace's members "
+                         "can read it",
+        }.get(scope, f"scope {scope!r}, which has no store — this will refuse")
+
+        tk.Label(frame, text=f"SECRET · {label_text}", bg=BG, fg=GOLD,
+                 font=(UI, 8, "bold"), anchor="w").pack(fill="x")
+        # The DESTINATION is named on the card, not just the fact that it is
+        # "secure". The owner is being asked to hand over a credential; which
+        # store it lands in decides who can read it afterwards, and that is
+        # the one thing they cannot find out later by looking at the card.
+        tk.Label(frame, text=f"Goes to {where}.",
+                 bg=BG, fg=SOFT, font=(UI, 9), wraplength=WIDTH - 60,
+                 justify="left", anchor="w").pack(fill="x", pady=(2, 0))
+        tk.Label(frame,
+                 text="Typed here it goes straight to that store — it is not "
+                      "stored on the card and never reaches a transcript.",
+                 bg=BG, fg=MUTED, font=(UI, 9), wraplength=WIDTH - 60,
+                 justify="left", anchor="w").pack(fill="x", pady=(2, 6))
+
+        entry = tk.Entry(frame, show="•", bg=PANEL, fg=TEXT,
+                         insertbackground=TEXT, relief="flat",
+                         font=(MONO, 11), highlightthickness=1,
+                         highlightbackground=EDGE, highlightcolor=ACCENT)
+        entry.pack(fill="x", ipady=6)
+        self._credential_entry = entry
+        self._credential_status = tk.Label(
+            frame, text="", bg=BG, fg=MUTED, font=(UI, 9),
+            wraplength=WIDTH - 60, justify="left", anchor="w")
+        self._credential_status.pack(fill="x", pady=(6, 0))
+
+        row = tk.Frame(frame, bg=BG)
+        row.pack(fill="x", pady=(8, 0))
+        self._plain_button(row, "Vault it  (Ctrl+Enter)",
+                           self._submit_credential, primary=True, side="left")
+
+        # Reveal is HELD, never toggled, and starts masked. A toggle is a state
+        # someone can leave on: the field then stays readable behind whatever
+        # window comes next, and over a shoulder or a screen share the owner has
+        # no signal that it is still showing. Holding a button is self-cancelling
+        # — the secret is visible exactly as long as a finger is down.
+        reveal = tk.Label(row, text="  👁 hold to reveal  ", bg=PANEL, fg=SOFT,
+                          font=(UI, 9), padx=6, pady=5, cursor="hand2")
+        reveal.pack(side="left", padx=(0, 8), pady=(0, 2))
+        reveal.bind("<ButtonPress-1>", lambda _e: entry.configure(show=""))
+        for unmask in ("<ButtonRelease-1>", "<Leave>"):
+            # <Leave> as well as the release: if the pointer leaves the label
+            # mid-hold the release can land elsewhere, and a field that stayed
+            # unmasked because of a mouse gesture is the exact state this
+            # control is shaped to make impossible.
+            reveal.bind(unmask, lambda _e: entry.configure(show="•"))
+
+        entry.bind("<Control-Return>", lambda _e: self._submit_credential())
+        entry.focus_set()
+
+    def _submit_credential(self) -> None:
+        """Read the field, clear it, push on a worker, report the real outcome."""
+        import threading
+
+        entry = getattr(self, "_credential_entry", None)
+        status = getattr(self, "_credential_status", None)
+        if entry is None:
+            return
+        value = entry.get()
+        # Cleared BEFORE anything else can fail: a secret left sitting in a
+        # visible widget after a failed push is the same disclosure as a
+        # successful one, and a retry would then double-submit it.
+        entry.delete(0, "end")
+        if not value:
+            if status is not None:
+                status.configure(text="Nothing entered — the card stays open.",
+                                 fg=GOLD)
+            return
+        if status is not None:
+            status.configure(text="Writing to the vault…", fg=SOFT)
+        card_id = self.card.id
+
+        def worker(secret: str) -> None:
+            from awask.secure_prompt import vault_credential
+            from awask.store import DecisionError
+
+            try:
+                code, detail = vault_credential(card_id, self.store, secret,
+                                                via="popup-masked")
+            except DecisionError as exc:
+                code, detail = 3, str(exc)
+            finally:
+                del secret
+            self.root.after(0, lambda: self._credential_done(code, detail))
+
+        threading.Thread(target=worker, args=(value,), daemon=True).start()
+        del value
+
+    def _credential_done(self, code: int, detail: str) -> None:
+        """Report the push outcome. Only code 0 closes the card."""
+        status = getattr(self, "_credential_status", None)
+        if code == 0:
+            self.handled += 1
+            self._advance()
+            return
+        # Every non-zero path leaves the card OPEN on purpose — a credential
+        # ask that closes on a failed write loses the ask silently, and the
+        # next person sees a resolved card and an absent secret.
+        #
+        # `detail` names WHICH door was shut. The version of this that just
+        # said "vault write failed" was measured live and is what sent the
+        # owner back to the terminal: three legs had failed for three
+        # different reasons and the message distinguished none of them.
+        messages = {
+            1: "Vault write FAILED — card still OPEN, nothing lost. Retry "
+               "after fixing: " + (detail or "no detail"),
+            2: "Nothing entered — the card stays open.",
+            3: detail or "That card is no longer a credential ask.",
+        }
+        if status is not None:
+            status.configure(text=messages.get(code, f"Unexpected result {code}"),
+                             fg=RED if code != 2 else GOLD)
 
     # ── the explorable context panel ──────────────────────────────────────────
 
@@ -725,16 +886,7 @@ class CardWindow:
         row.pack(fill="x", pady=(16, 0))
         row.bind("<MouseWheel>", wheel)
 
-        # The card's RECORDED tab title (captured inside the raising session's
-        # console) beats the located window title: Windows Terminal's window
-        # title is whatever tab is ACTIVE, so the located one names the tab the
-        # owner happened to be looking at — measured 2026-08-25, a card about
-        # this session confidently pointed the owner at an unrelated tab. A
-        # window-derived title is therefore shown WITH its uncertainty.
-        recorded = (card.source.tab_title or "").strip()
-        located = (caps.get("tab") or "").strip()
-        tab = recorded or (f"{located}  (window's active tab — may not be this card's)"
-                           if located else "")
+        tab = (caps.get("tab") or "").strip()
         tk.Label(row, text=("THE TERMINAL THIS IS ABOUT" if tab else "THIS SESSION"),
                  bg=BG, fg=MUTED, font=(UI, 8, "bold"), anchor="w").pack(fill="x")
         if tab:
@@ -1068,8 +1220,7 @@ class CardWindow:
     def _focus_terminal(self) -> None:
         from awask import terminal
 
-        ok, why = terminal.focus(self.card.source.session_pid,
-                                 tab_hint=self.card.source.tab_title)
+        ok, why = terminal.focus(self.card.source.session_pid)
         self._flash(why, GREEN if ok else GOLD)
 
     def _open_terminal(self) -> None:
@@ -1138,26 +1289,9 @@ class CardWindow:
         # feature only worked in one tab. That is the silent-no-op pattern of
         # `.claude/rules/security-review-patterns.md` §5 living inside the
         # surface whose entire job is to not lose an ask.
-        # Polling every second must not cost a full-store parse: with a large
-        # store (measured 2026-08-25: 1,170 card files) re-reading every JSON
-        # each tick starved the Tk mainloop and the window stopped responding
-        # to drags and clicks entirely. The directory signature is checked
-        # first; the full re-list runs only when something changed — plus a
-        # periodic full pass so a deadline can expire in a store nothing is
-        # writing to.
-        self._tick_count = getattr(self, "_tick_count", 0) + 1
         try:
-            sig = self.store.signature()
-        except Exception:
-            sig = None
-        stale = sig is None or sig != getattr(self, "_store_sig", None)
-        if stale or self._tick_count % 15 == 0:
-            self._store_sig = sig
-            try:
-                fresh = self._refresh_queue()
-            except OSError:
-                fresh = []
-        else:
+            fresh = self._refresh_queue()
+        except OSError:
             fresh = []
         if fresh and {c.id for c in fresh} != {c.id for c in self.queue}:
             arrived = [c for c in fresh if c.id not in {q.id for q in self.queue}]
@@ -1371,7 +1505,7 @@ def _live_multisession() -> int:
     problems: list[str] = []
     # CREATE_NO_WINDOW. Both spawns below are console programs, and this probe
     # can itself be launched from the detached card path — where a child with no
-    # console gets a NEW one and flashes on the desktop (gate 1t's class). A
+    # console gets a NEW one and flashes on the desktop. A
     # check for focus-stealing windows that opened one would be self-defeating.
     no_window = 0x08000000 if os.name == "nt" else 0
 
@@ -1530,8 +1664,6 @@ def _self_test() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["AITHER_DECISIONS_DIR"] = str(Path(tmp) / "cards")
         os.environ["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
-        # A self-test must never type into a real console.
-        os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = "0"
         store = DecisionStore(Path(tmp) / "cards")
         long_fact = (
             "the six workstreams are executing in background workflow wmxuw5c0t and I "

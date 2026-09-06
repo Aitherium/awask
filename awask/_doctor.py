@@ -23,7 +23,7 @@ import sys
 #: package cannot read the registry, and a doctor that guessed at the family
 #: would go stale in silence. Regenerate to update.
 SELF = 'awask'
-FAMILY = ['awbac', 'awbrowse', 'awdit', 'awevolve', 'awfind', 'awgit', 'awgraph', 'awiam', 'awkno', 'awm', 'awmail', 'awnboard', 'awnest', 'awnet', 'awnode', 'awpredict', 'awprism', 'awreason', 'awrecover', 'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awresearch', 'awrise', 'awrun', 'awseal', 'awshare', 'awtunnel', 'awwall']
+FAMILY = ['awbac', 'awbrain', 'awbrowse', 'awclassify', 'awdelphi', 'awdit', 'awembed', 'awevolve', 'awfind', 'awfocus', 'awgit', 'awgraph', 'awgym', 'awiam', 'awkno', 'awm', 'awmail', 'awnboard', 'awnest', 'awnet', 'awnode', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover', 'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awresearch', 'awrise', 'awrouter', 'awrtifact', 'awrun', 'awscreen', 'awseal', 'awsettings', 'awshare', 'awstorage', 'awswarm', 'awtoll', 'awtunnel', 'awvision', 'awvoice', 'awwall']
 PAIRS_WITH = ['adk', 'awmail', 'awnest', 'awrelay']
 
 #: This brick's OWN config, read out of its source at generation time.
@@ -33,7 +33,7 @@ PAIRS_WITH = ['adk', 'awmail', 'awnest', 'awrelay']
 #: platform-wide vars it also touches would be noise, and a doctor that floods
 #: gets ignored.
 ENV_REQUIRED = []
-ENV_OPTIONAL = ['AWASK_NOTIFY_COOLDOWN', 'AWASK_NOTIFY_TTL', 'AWASK_STOP_WAIT']
+ENV_OPTIONAL = ['AWASK_NOTIFY_COOLDOWN', 'AWASK_STOP_WAIT']
 
 
 def _installed(mod: str) -> "str | None":

@@ -59,7 +59,22 @@ _INTERNAL = (
 
 #: Modules whose ABSENCE means the artifact is broken regardless of how clean it
 #: scans. __init__ is the entry point; cli is the command-line interface.
-_KEYSTONES = ("awask/__init__.py", "awask/cli.py", "awask/agent_tools.py", "awask/channels.py", "awask/context.py", "awask/entry.py", "awask/install.py", "awask/notify.py", "awask/popup.py", "awask/render.py", "awask/steerback.py", "awask/store.py", "awask/terminal.py", "awask/winproc.py")
+_KEYSTONES = (
+    "awask/__init__.py",
+    "awask/cli.py",
+    "awask/agent_tools.py",
+    "awask/channels.py",
+    "awask/context.py",
+    "awask/entry.py",
+    "awask/install.py",
+    "awask/notify.py",
+    "awask/popup.py",
+    "awask/render.py",
+    "awask/steerback.py",
+    "awask/store.py",
+    "awask/terminal.py",
+    "awask/winproc.py",
+)
 
 
 class CouldNotJudgeError(Exception):

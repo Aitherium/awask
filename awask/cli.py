@@ -45,11 +45,7 @@ from awask.store import (
     DecisionOption,
     DecisionSource,
     DecisionStore,
-    console_tab_title,
 )
-
-#: Spawn helpers without allocating a console (the focus-stealing class).
-_CREATE_NO_WINDOW = 0x08000000
 
 _DURATION_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*$", re.IGNORECASE)
 _UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 60}
@@ -96,9 +92,9 @@ def _git_branch(cwd: str) -> str:
     # in a DETACHED process, which has NO console — so when it spawns a console
     # program without this flag, Windows allocates a NEW console for the child
     # and a window flashes on the owner's desktop. Every single card raise did
-    # that, on a machine where the whole point of the flag is that a console on
-    # the interactive desktop TAKES FOCUS and eats keystrokes. Found while
-    # auditing a report of terminal-window spam.
+    # that, on a machine where the whole point of the flag is that a
+    # console on the interactive desktop TAKES FOCUS and eats
+    # keystrokes. Found while auditing a report of terminal-window spam.
     extra: dict = {"creationflags": _CREATE_NO_WINDOW} if os.name == "nt" else {}
     try:
         proc = subprocess.run(
@@ -122,12 +118,43 @@ def _detect_session_id(explicit: str = "") -> str:
         explicit,
         os.getenv("AITHER_SESSION_ID", ""),
         os.getenv("CLAUDE_SESSION_ID", ""),
+        os.getenv("CLAUDE_CODE_SESSION_ID", ""),
     )
     for candidate in candidates:
         value = (candidate or "").strip()
         if value:
             return value
     return ""
+
+
+def _detect_transcript(explicit: str = "", session_id: str = "") -> str:
+    """Find the raising session's transcript when the caller did not pass one.
+
+    The Stop hook passes ``--transcript`` because it receives the path in its
+    payload — but every OTHER raiser (the skill's ``awask ask``, agents,
+    the daemon) leaves it empty, and the card's "what this session was doing"
+    panel then reads "no transcript anchored". Claude Code names its transcripts
+    ``~/.claude/projects/<encoded-cwd>/<session-id>.jsonl``; given a session id
+    and cwd we can locate the newest one. Returns "" when nothing plausibly
+    matches — the panel then reports the absence honestly rather than guessing.
+    """
+    if explicit.strip():
+        return explicit.strip()
+    sid = (session_id or _detect_session_id()).strip()
+    if not sid:
+        return ""
+    root = Path(os.getenv("CLAUDE_CONFIG_DIR", "")) if os.getenv("CLAUDE_CONFIG_DIR") else Path.home() / ".claude"
+    projects = root / "projects"
+    if not projects.is_dir():
+        return ""
+    # The transcript lives under the ENCODED project dir; we do not need the
+    # exact encoding to find it — the session id is unique across the tree.
+    candidates = sorted(
+        projects.glob(f"*/{sid}.jsonl"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+        reverse=True,
+    )
+    return str(candidates[0]) if candidates else ""
 
 
 def _resolve_session_pid(explicit: int = 0) -> int:
@@ -184,28 +211,47 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
             print(str(exc), file=sys.stderr)
             return 2
 
+    kind = args.kind
+    if args.credential:
+        if not (args.secret_name or "").strip():
+            print("--credential requires --secret-name VAULT_KEY", file=sys.stderr)
+            return 2
+        if not (args.credential_description or "").strip():
+            print("--credential requires --credential-description (shown to the owner)",
+                  file=sys.stderr)
+            return 2
+        kind = "credential"
+    elif args.secret_name:
+        print("--secret-name requires --credential", file=sys.stderr)
+        return 2
+
     cwd = args.cwd or os.getcwd()
     session_pid = _resolve_session_pid(args.session_pid)
+    session_id = _detect_session_id(args.session)
     card = DecisionCard(
         id="",
         title=args.title.strip(),
         summary=(args.summary or "").strip(),
         detail=(args.detail or "").strip(),
-        kind=args.kind,
+        kind=kind,
         urgency=args.urgency,
         options=options,
         default_key=default_key,
         facts=[f for f in (args.fact or []) if f.strip()],
         source=DecisionSource(
-            session_id=_detect_session_id(args.session),
+            session_id=session_id,
             agent=args.agent or os.getenv("AITHER_AGENT_NAME", "") or "claude-code",
             cwd=cwd,
             branch=args.branch or _git_branch(cwd),
             session_pid=session_pid,
-            tab_title=console_tab_title(),
-            transcript=args.transcript or "",
+            transcript=_detect_transcript(args.transcript or "", session_id),
         ),
         deadline=deadline,
+        secret_name=(args.secret_name or "").strip() if args.credential else None,
+        credential_format=args.credential_format if args.credential else None,
+        credential_scope=args.credential_scope if args.credential else None,
+        credential_description=((args.credential_description or "").strip()
+                                if args.credential else None),
     )
 
     try:
@@ -300,6 +346,18 @@ def cmd_show(args: argparse.Namespace, store: DecisionStore) -> int:
 
 
 def cmd_answer(args: argparse.Namespace, store: DecisionStore) -> int:
+    pre = store.get(args.id)
+    if pre is not None and (pre.kind or "").strip().lower() == "credential":
+        if args.choice:
+            print("credential cards take the value via the masked prompt only "
+                  "— no positional choice", file=sys.stderr)
+            return 2
+        from awask.secure_prompt import capture_credential
+        try:
+            return capture_credential(args.id, store)
+        except DecisionError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
     try:
         # deliver=False — delivered explicitly below so the path can be shown.
         card = store.answer(args.id, args.choice, note=args.note or "", via=args.via,
@@ -318,32 +376,7 @@ def cmd_answer(args: argparse.Namespace, store: DecisionStore) -> int:
         # like one that did.
         print("no session on this card — nothing to steer; the answer is recorded only",
               file=sys.stderr)
-    _post_relay_note(f"answered {card.id}: {card.answer} (via {args.via})")
     return 0
-
-
-def _post_relay_note(text: str) -> None:
-    """Best-effort note to the sessions' relay channel (#agents).
-
-    The desk is the cockpit, awask is the plane, and awrelay is the channel the
-    fleet coordinates on — an answer nobody else sees is an answer half
-    delivered (owner: "unify and marry these awask/awdesk + decision cards").
-    One fire-and-forget spawn, never a dependency: the relay being down must
-    not change what an answer does. Detached + CREATE_NO_WINDOW + timeout so it
-    can neither block the answer nor flash a console (gate 1t).
-    """
-    if os.environ.get("AWASK_RELAY_NOTES", "1").strip().lower() in ("0", "false", "no", "off"):
-        return
-    try:
-        subprocess.Popen(
-            ["awrelay", "send", "#agents", text[:800]],
-            creationflags=_CREATE_NO_WINDOW if os.name == "nt" else 0,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-        )
-    except OSError:
-        return  # no awrelay on PATH — the answer stands, the note is lost
 
 
 def cmd_steer(args: argparse.Namespace, store: DecisionStore) -> int:
@@ -378,7 +411,62 @@ def cmd_cancel(args: argparse.Namespace, store: DecisionStore) -> int:
         print(str(exc), file=sys.stderr)
         return 1
     print(f"{card.id} withdrawn")
-    _post_relay_note(f"withdrew {card.id}")
+    return 0
+
+
+def cmd_promise(args: argparse.Namespace, store: DecisionStore) -> int:
+    """Record work owed — an agent commitment with a deadline (promise plane).
+
+    A promise BREACHES when overdue; it never expires. The host promise sweep
+    (AitherOS-Promise-Sweep, every 15 min) breaches overdue promises and raises
+    an owner escalation card, so a promise with no due time is refused here.
+    """
+    import time as _time
+
+    due = (args.due or "").strip()
+    deadline = None
+    if due:
+        try:
+            deadline = _time.time() + parse_duration(due)
+        except ValueError:
+            try:
+                deadline = _time.mktime(_time.strptime(due, "%Y-%m-%dT%H:%M"))
+            except ValueError:
+                try:
+                    deadline = _time.mktime(_time.strptime(due, "%Y-%m-%d"))
+                except ValueError:
+                    deadline = None
+    if deadline is None:
+        print(f"cannot parse --due {args.due!r} (use 30m/2h/1d or ISO)", file=sys.stderr)
+        return 2
+    try:
+        card = store.create(DecisionCard(
+            id="",
+            title=args.title,
+            kind="promise",
+            deadline=deadline,
+            owed_by=args.owed_by or "",
+            owed_to=args.owed_to or "",
+            preconditions=list(args.precondition or []),
+            summary=args.summary or "",
+            source=DecisionSource(agent=args.agent or "cli",
+                                  cwd=args.cwd or str(Path.cwd())),
+        ))
+    except DecisionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"{card.id} promise recorded (due {_time.strftime('%Y-%m-%d %H:%M', _time.localtime(deadline))})")
+    return 0
+
+
+def cmd_resolve(args: argparse.Namespace, store: DecisionStore) -> int:
+    """Close an open promise as KEPT."""
+    try:
+        card = store.resolve(args.id, note=args.note or "")
+    except DecisionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(f"{card.id} promise resolved")
     return 0
 
 
@@ -429,33 +517,9 @@ def _self_test() -> int:
             print(f"  FAIL {name} {detail}")
             failures.append(name)
 
-    # The relay note is fire-and-forget by contract: it must attempt the spawn
-    # with the right argv, and the env gate must turn it fully off.
-    calls: list[list[str]] = []
-
-    class _FakePopen:  # noqa: SIM115 - test double
-        def __init__(self, argv, **kwargs):
-            calls.append(list(argv))
-
-    original_popen = subprocess.Popen
-    subprocess.Popen = _FakePopen  # type: ignore[assignment]
-    try:
-        _post_relay_note("answered d-x: ack")
-        check("a relay note spawns awrelay send to #agents",
-              bool(calls) and calls[-1][:3] == ["awrelay", "send", "#agents"])
-        os.environ["AWASK_RELAY_NOTES"] = "0"
-        calls.clear()
-        _post_relay_note("muted")
-        check("AWASK_RELAY_NOTES=0 silences the note", not calls)
-    finally:
-        subprocess.Popen = original_popen
-        os.environ.pop("AWASK_RELAY_NOTES", None)
-
     with tempfile.TemporaryDirectory() as tmp:
         os.environ["AITHER_DECISIONS_DIR"] = str(Path(tmp) / "cards")
         os.environ["AITHER_STEER_DIR"] = str(Path(tmp) / "steer")
-        # A self-test must never type into a real console.
-        os.environ["AITHER_DECISIONS_CONSOLE_INPUT"] = "0"
         store = DecisionStore(Path(tmp) / "cards")
 
         # 1. a decision card with no options is refused
@@ -652,6 +716,17 @@ def build_parser() -> argparse.ArgumentParser:
                      help="apply the default after this long")
     ask.add_argument("--fact", action="append", help="repeatable; a measurement you took")
     ask.add_argument("--kind", default="decision", choices=("decision", "blocked", "info"))
+    ask.add_argument("--credential", action="store_true",
+                     help="ask for a secret: the value goes to the vault via a masked "
+                          "prompt (secure_prompt.py), never the card")
+    ask.add_argument("--secret-name", default="", metavar="VAULT_KEY",
+                     help="vault key the value is written to (required with --credential)")
+    ask.add_argument("--credential-format", default="api_key",
+                     choices=("password", "api_key", "totp_seed", "custom"))
+    ask.add_argument("--credential-scope", default="platform",
+                     choices=("platform", "workspace", "user"))
+    ask.add_argument("--credential-description", default="",
+                     help="why we need it — shown to the owner (required with --credential)")
     ask.add_argument("--urgency", default="normal",
                      choices=("low", "normal", "high", "critical"))
     ask.add_argument("--session", default="", help="session id the answer routes back to")
@@ -682,7 +757,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     answer = sub.add_parser("answer", help="answer a card and steer the session")
     answer.add_argument("id")
-    answer.add_argument("choice")
+    # Optional: a credential card must NOT take a positional choice — its value
+    # is entered via the masked prompt (secure_prompt.py).
+    answer.add_argument("choice", nargs="?", default="")
     answer.add_argument("--note", default="", help="anything the agent should also know")
     answer.add_argument("--via", default="cli")
 
@@ -698,6 +775,22 @@ def build_parser() -> argparse.ArgumentParser:
     cancel = sub.add_parser("cancel", help="withdraw a card you no longer need answered")
     cancel.add_argument("id")
     cancel.add_argument("--note", default="")
+
+    promise = sub.add_parser("promise", help="record work owed (an agent commitment with a due time)")
+    promise.add_argument("title")
+    promise.add_argument("--due", required=True, metavar="30m|ISO",
+                         help="when the promise must be kept; overdue promises BREACH")
+    promise.add_argument("--owed-by", default="", help="agent identity making the promise")
+    promise.add_argument("--owed-to", default="", help="who it is owed to")
+    promise.add_argument("--precondition", action="append",
+                         help="repeatable; a fact that must hold for the promise to be kept")
+    promise.add_argument("--summary", default="")
+    promise.add_argument("--agent", default="")
+    promise.add_argument("--cwd", default="")
+
+    resolve = sub.add_parser("resolve", help="close an open promise")
+    resolve.add_argument("id")
+    resolve.add_argument("--note", default="")
 
     watch = sub.add_parser("watch", help="render cards as they appear")
     watch.add_argument("--interval", default="2.0")
@@ -753,6 +846,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "steer": cmd_steer,
         "window": cmd_window,
         "cancel": cmd_cancel,
+        "promise": cmd_promise,
+        "resolve": cmd_resolve,
         "watch": cmd_watch,
         "sweep": cmd_sweep,
     }[args.command]
