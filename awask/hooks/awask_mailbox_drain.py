@@ -28,6 +28,12 @@ from pathlib import Path
 #: than trusting it, so a malformed payload cannot walk out of the mailbox.
 _SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
+#: awfocus asks ride the same mailbox, marked so they are framed as a QUESTION
+#: (answer it) rather than a decision answer (act on it). Kept as a literal, not
+#: an import — either hook may be installed alone, and awfocus.steer spells the
+#: same string; the self-test pins both sides of that contract.
+AWFOCUS_MARKER = "<!-- awfocus:question -->"
+
 #: Cap the injected text. A pathological mailbox must not blow up the turn.
 _MAX_CHARS = 8000
 
@@ -84,6 +90,44 @@ def drain(session_id: str) -> list:
     return out
 
 
+def build_context(blocks: "list[str]") -> str:
+    """Frame mailbox bodies for the agent — per-block, by marker.
+
+    Two shapes ride one mailbox: decision-card ANSWERS (framed as decisions to
+    act on) and awfocus QUESTIONS (marked `<!-- awfocus:question -->`, framed
+    as an owner ask to answer). The frame is the instruction, so mixing them
+    under one frame would tell the agent to "act on" a question and to "answer"
+    a decision — each block is framed by its own marker.
+    """
+    decision_blocks = [b for b in blocks if not b.startswith(AWFOCUS_MARKER)]
+    question_blocks = []
+    for b in blocks:
+        if b.startswith(AWFOCUS_MARKER):
+            body = b[len(AWFOCUS_MARKER):].strip()
+            # Drop the marker's boilerplate paragraph; keep the question text.
+            parts = body.split("\n\n", 1)
+            body = parts[1].strip() if len(parts) == 2 else parts[0].strip()
+            question_blocks.append(body)
+    noun = ("a decision card" if len(decision_blocks) == 1
+            else ("%d decision cards" % len(decision_blocks)))
+    context = ""
+    if decision_blocks:
+        context += (
+            "The owner answered " + noun + " you raised. These are their decisions — "
+            "act on them and do not re-ask:\n\n" + "\n\n---\n\n".join(decision_blocks)
+        )
+    if question_blocks:
+        if context:
+            context += "\n\n---\n\n"
+        context += (
+            "The owner asked you directly. Answer it now — this is a question, "
+            "not a decision to act on:\n\n" + "\n\n---\n\n".join(question_blocks)
+        )
+    if len(context) > _MAX_CHARS:
+        context = context[:_MAX_CHARS] + "\n\n[truncated]"
+    return context
+
+
 def main() -> int:
     payload = read_payload()
     session_id = str(payload.get("session_id") or "").strip()
@@ -95,14 +139,7 @@ def main() -> int:
     if not blocks:
         return 0
 
-    noun = "a decision card" if len(blocks) == 1 else ("%d decision cards" % len(blocks))
-    context = (
-        "The owner answered " + noun + " you raised. These are their decisions — "
-        "act on them and do not re-ask:\n\n" + "\n\n---\n\n".join(blocks)
-    )
-    if len(context) > _MAX_CHARS:
-        context = context[:_MAX_CHARS] + "\n\n[truncated]"
-
+    context = build_context(blocks)
     sys.stdout.write(json.dumps({"context": context, "action": "add_context"}))
     return 0
 
@@ -136,6 +173,24 @@ def self_test() -> int:
         drain("sess-1")
         delivered = sorted((box / "delivered").glob("*.md"))
         check("a same-named second answer is kept, not clobbered", len(delivered) == 2)
+
+    # The two framing shapes must never swap instructions: a decision answer
+    # is "act on it", an awfocus question is "answer it".
+    ctx = build_context(["ship the red button"])
+    check("a decision answer is framed as a decision",
+          "act on them and do not re-ask" in ctx and "decisions" in ctx)
+    qbody = (AWFOCUS_MARKER + "\n\n" +
+             "The owner asked this of you directly. Answer it, and if it needs "
+             "a decision you cannot make, say so:\n\n" +
+             "which session fixed the tunnel?")
+    ctxq = build_context([qbody])
+    check("an awfocus question is framed as a question",
+          "Answer it now" in ctxq and "which session fixed the tunnel" in ctxq)
+    check("the question's boilerplate is stripped, not injected",
+          "Answer it, and if it needs" not in ctxq)
+    ctxm = build_context(["do the thing", qbody])
+    check("mixed mailboxes keep both framings",
+          "act on them and do not re-ask" in ctxm and "Answer it now" in ctxm)
 
     print("self-test", "passed" if ok else "FAILED")
     return 0 if ok else 1
