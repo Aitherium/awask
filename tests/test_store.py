@@ -160,3 +160,34 @@ def test_to_dict_round_trips_through_json(tmp_path):
     assert again.id == card.id
     assert again.facts == ["312 rows affected"]
     assert again.option("hold").consequence == "blocks the release"
+
+
+def test_sweep_survives_a_card_it_cannot_delete(tmp_path, monkeypatch):
+    """One file held open by a reader must not end the sweep (WinError 32).
+
+    Measured 2026-09-18: the sweep died on the 1,155th of 2,772 closed cards and
+    left the store 1,634 files deep -- every reader then walked all of them.
+    """
+    from pathlib import Path
+
+    store = DecisionStore(tmp_path)
+    ids = [store.create(_card(summary=f"card {i}")).id for i in range(3)]
+    for card_id in ids:
+        store.cancel(card_id)
+    kept_open = store.create(_card(summary="still waiting")).id
+
+    locked = ids[1]
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self.name == f"{locked}.json":
+            raise PermissionError(32, "being used by another process")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    removed = store.sweep(keep_closed_seconds=-1)
+
+    assert removed == 2
+    assert store.last_sweep_busy == 1
+    left = sorted(p.stem for p in tmp_path.glob("d-*.json"))
+    assert left == sorted([locked, kept_open])
