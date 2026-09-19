@@ -191,3 +191,36 @@ def test_sweep_survives_a_card_it_cannot_delete(tmp_path, monkeypatch):
     assert store.last_sweep_busy == 1
     left = sorted(p.stem for p in tmp_path.glob("d-*.json"))
     assert left == sorted([locked, kept_open])
+
+
+def test_sweep_archive_keeps_every_swept_card_and_is_reversible(tmp_path):
+    """An unattended sweep must not be the only copy's end: with --archive each
+    card lands in a monthly zip BEFORE it is removed, byte for byte."""
+    import json
+    import zipfile
+
+    store = DecisionStore(tmp_path / "store")
+    closed = [store.create(_card(summary=f"done {i}")).id for i in range(2)]
+    for card_id in closed:
+        store.cancel(card_id)
+    kept_open = store.create(_card(summary="still waiting")).id
+    originals = {c: (tmp_path / "store" / f"{c}.json").read_bytes() for c in closed}
+
+    removed = store.sweep(keep_closed_seconds=-1, archive=tmp_path / "archive")
+
+    assert removed == 2
+    assert [p.stem for p in (tmp_path / "store").glob("d-*.json")] == [kept_open]
+    bundles = list((tmp_path / "archive").glob("cards-*.zip"))
+    assert len(bundles) == 1
+    with zipfile.ZipFile(bundles[0]) as zf:
+        assert sorted(zf.namelist()) == sorted(f"{c}.json" for c in closed)
+        for c in closed:
+            assert zf.read(f"{c}.json") == originals[c]
+            assert json.loads(zf.read(f"{c}.json"))["status"] == "cancelled"
+
+    # a second sweep appends to the same month without duplicating entries
+    again = store.create(_card(summary="done later")).id
+    store.cancel(again)
+    store.sweep(keep_closed_seconds=-1, archive=tmp_path / "archive")
+    with zipfile.ZipFile(bundles[0]) as zf:
+        assert len(zf.namelist()) == 3
