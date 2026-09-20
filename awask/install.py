@@ -13,6 +13,7 @@ What it writes
 Three files into ``<target>/hooks/``, and three entries into ``<target>/settings.json``:
 
   Stop              stop_awask_cards.py         holds the turn open for your answer
+  Stop              stop_steer_drain.py         a steer in the mailbox becomes the next turn
   UserPromptSubmit  awask_mailbox_drain.py      carries your answer INTO the session
   Notification      awask_notification_card.py  "the agent is waiting" becomes a card
 
@@ -48,6 +49,11 @@ from pathlib import Path
 #: hook filename -> Claude Code event it binds to.
 HOOKS = {
     "stop_awask_cards.py": "Stop",
+    # A steer waiting in the mailbox becomes the session's next turn at Stop -- the
+    # path that needs no keystroke from the owner (2026-09-19). Runs beside the card
+    # hook; the card hook holds the turn open for an ANSWER, this one delivers what
+    # is already there.
+    "stop_steer_drain.py": "Stop",
     "awask_mailbox_drain.py": "UserPromptSubmit",
     "awask_notification_card.py": "Notification",
 }
@@ -253,7 +259,7 @@ def self_test() -> int:
 
         added, _ = merge_settings(target, dry_run=False)
         data = json.loads((target / "settings.json").read_text(encoding="utf-8"))
-        check("adds one entry per event", len(added) == 3)
+        check("adds one entry per hook", len(added) == 4)
         check("preserves unrelated settings", data.get("model") == "opus")
         commands = [
             e.get("command", "")
@@ -292,7 +298,7 @@ def self_test() -> int:
         merge_settings(dry, dry_run=True)
         check("dry run writes no settings.json", not (dry / "settings.json").exists())
         w, _ = copy_hooks(dry, dry_run=True)
-        check("dry run copies no hooks", not (dry / "hooks").exists() and len(w) == 3)
+        check("dry run copies no hooks", not (dry / "hooks").exists() and len(w) == 4)
 
     print("self-test", "passed" if ok else "FAILED")
     return 0 if ok else 1
