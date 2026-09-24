@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import pytest
-
 from awask.store import (
     STATUS_ANSWERED,
     STATUS_CANCELLED,

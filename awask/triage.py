@@ -24,7 +24,6 @@ import re
 import time
 from typing import Literal
 
-
 TriageResult = Literal["decision", "context"]
 
 # Patterns that indicate a status-only card (information, not a choice).
@@ -79,7 +78,6 @@ def triage(card: dict) -> tuple[TriageResult, str]:
     status = (card.get("status") or "open").strip().lower()
     options = card.get("options") or []
     deadline = card.get("deadline")
-    title = (card.get("title") or "").strip()
 
     # Not open? Outside scope of triage.
     if status != "open":
