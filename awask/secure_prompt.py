@@ -50,6 +50,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from awask.quiet import is_quiet
 from awask.store import DecisionCard, DecisionError, DecisionStore
 
 logger = logging.getLogger(__name__)
@@ -132,6 +133,13 @@ def launch_gui_prompt(card: DecisionCard) -> "tuple[bool, str]":
     """
     if (card.kind or "").strip().lower() != "credential":
         return False, f"{card.id} is not a credential ask — no prompt to open"
+    # Quiet (Do-not-disturb, or a full-screen game/app in front): the masked
+    # dialog is topmost to win the raise, i.e. it lands over the game. Hold it.
+    # The card is untouched -- still open, answerable from the terminal door.
+    quiet, quiet_why = is_quiet()
+    if quiet:
+        return False, (f"held while quiet: {quiet_why}; "
+                       f"answer with awask answer {card.id}")
     if not has_display():
         return False, ("no display (DISPLAY unset) — masked prompt not launched; "
                        f"answer at a terminal with: awask answer {card.id}")
