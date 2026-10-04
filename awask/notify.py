@@ -47,6 +47,7 @@ from typing import Optional
 from awask.quiet import is_quiet, quiet_reason
 from awask.render import human_age, render_summary
 from awask.store import STATUS_OPEN, DecisionCard, DecisionStore, decisions_dir
+from awask.triage import decisions_waiting
 
 #: Within this many seconds of the last raise, a new card is folded into a single
 #: summary rather than raising its own window.
@@ -295,10 +296,13 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
     state = _read_state()
     last = float(state.get("last_toast_at") or 0.0)
     now = time.time()
-    coalesced = (now - last) < QUIET_WINDOW_SECONDS and len(open_cards) > 1
+    # Only decisions count toward "N decisions waiting": an open info digest is
+    # context and must not inflate the number or turn a toast into a summary.
+    waiting = decisions_waiting(open_cards)
+    coalesced = (now - last) < QUIET_WINDOW_SECONDS and len(waiting) > 1
 
     if coalesced:
-        title = f"{len(open_cards)} decisions waiting"
+        title = f"{len(waiting)} decisions waiting"
         body = render_summary(open_cards)
     else:
         prefix = {"blocked": "Blocked on you", "info": "You should know"}.get(
@@ -329,7 +333,7 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
         # was measured in real use and it is pure noise.
         skipped.append("card window (no options — nothing to click)")
     elif coalesced:
-        skipped.append(f"card window (one is already open · {len(open_cards)} queued)")
+        skipped.append(f"card window (one is already open · {len(waiting)} queued)")
     else:
         window_error = open_card_window(card.id)
         if window_error is None:

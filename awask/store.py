@@ -897,8 +897,56 @@ class DecisionStore:
                 else:
                     raise DecisionError("could not mint an unused card id")
             self._validate(card)
+            if self._grouping_enabled():
+                twin = self._group_new(card)
+                if twin is not None:
+                    return twin
             self._write(card)
             return card
+
+    #: Card grouping at raise time (awask.grouping): a newer card in a
+    #: series supersedes the older open one, and a cross-source duplicate of an
+    #: open card collapses into the richer of the two. Off with
+    #: ``AWASK_GROUPING=0`` (read per raise) or by setting this False on an
+    #: instance; None defers to the environment.
+    group_on_create: Optional[bool] = None
+
+    def _grouping_enabled(self) -> bool:
+        if self.group_on_create is not None:
+            return bool(self.group_on_create)
+        return os.environ.get("AWASK_GROUPING", "1").strip() != "0"
+
+    def _group_new(self, card: DecisionCard) -> Optional[DecisionCard]:
+        """Apply grouping for a card about to be written (lock held).
+
+        Returns the existing open twin when ``card`` is a cross-source duplicate
+        no richer than it -- the twin then records the new raise as a fact, and
+        nothing new is written. Otherwise withdraws what ``card`` supersedes,
+        each with a note naming ``card``, and returns None. A grouping failure
+        never blocks a raise: it is printed and the card is written as-is.
+        """
+        try:
+            from awask.grouping import carried_handles, plan_for_new
+            open_cards = [c for c in (self._read_file(t, st) for t, st in self._scan())
+                          if c is not None and c.is_open]
+            twin, todo = plan_for_new(card, open_cards, time.time())
+        except Exception as exc:  # noqa: BLE001 - a raise must survive grouping
+            print(f"[decisions] grouping skipped ({exc.__class__.__name__}: {exc})",
+                  file=sys.stderr)
+            return None
+        if twin is not None:
+            self.add_facts(twin.id, [f"raised again as {card.title!r}"[:240]]
+                           + carried_handles(card, twin))
+            print(f"[decisions] grouped into {twin.id} (same subject, richer card)",
+                  file=sys.stderr)
+            return self.get(twin.id) or twin
+        card.facts.extend(f for f in todo.facts.get(card.id, []) if f not in card.facts)
+        for cid, (rule, note) in todo.withdraw.items():
+            try:
+                self.cancel(cid, note=f"grouping {rule}: {note}")
+            except DecisionError as exc:
+                print(f"[decisions] could not withdraw {cid}: {exc}", file=sys.stderr)
+        return None
 
     @staticmethod
     def _dedupe_prefix(card: DecisionCard) -> str:
