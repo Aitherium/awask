@@ -1252,9 +1252,29 @@ class DecisionStore:
         # is what keeps "every transition applies the answer" true with no
         # special case to remember.
         self._apply_card_recipe(card)
+        self._sync_relay(card)
         return True
 
     # ── answering ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _sync_relay(card: DecisionCard) -> None:
+        """Tell the relay's card message about a transition. Never blocks, never raises.
+
+        Every transition (answer, cancel, resolve, deadline) calls this, so the ONE
+        relay message flips to its closed state wherever it is open -- the desk,
+        the browser, a phone. It runs in a daemon thread and is a no-op when no
+        relay is configured; a lost push is repaired by the relay's own poll.
+        """
+        try:
+            from awask.relay_post import sync_card
+        except ImportError:
+            return
+        try:
+            sync_card(card)
+        except Exception as exc:  # pragma: no cover - the transition must survive this
+            print(f"[decisions] relay sync hook failed for {card.id}: "
+                  f"{exc.__class__.__name__}: {exc}", file=sys.stderr)
 
     def _apply_card_recipe(self, card: DecisionCard) -> None:
         """Turn a closed card's answer into the action its recipe promised.
@@ -1386,6 +1406,7 @@ class DecisionStore:
         # The terminal-reply hook answers with deliver=False, and a card raised
         # by a scheduler has no session to deliver to at all.
         self._apply_card_recipe(card)
+        self._sync_relay(card)
 
         if deliver:
             # Outside the lock: delivery touches a different tree and must never
@@ -1428,7 +1449,8 @@ class DecisionStore:
             card.answered_at = time.time()
             card.answered_via = "agent"
             self._write(card)
-            return card
+        self._sync_relay(card)
+        return card
 
     def resolve(self, card_id: str, *, note: str = "") -> DecisionCard:
         """Close a card the raising agent has fulfilled itself: a promise KEPT,
@@ -1455,7 +1477,8 @@ class DecisionStore:
             card.answered_at = time.time()
             card.answered_via = "agent"
             self._write(card)
-            return card
+        self._sync_relay(card)
+        return card
 
     def steer(self, card_id: str, text: str, *, via: str = "popup") -> DecisionCard:
         """Send the owner's OWN words to the raising session, card still open.

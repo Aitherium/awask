@@ -359,4 +359,26 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
     else:
         skipped.append(f"webhook ({hook_error})")
 
+    # The relay: ONE structured message per card in the owner-only #decisions
+    # channel, rendered with its options as buttons on every surface that reads the
+    # relay (desk, browser, phone, terminal). Not coalesced -- it is a message in a
+    # channel, not an interruption, and each card needs its own buttons.
+    relay_error = _relay_post(card)
+    if relay_error is None:
+        delivered.append("relay")
+    else:
+        skipped.append(f"relay ({relay_error})")
+
     return NotifyResult(delivered=delivered, skipped=skipped, errors=errors)
+
+
+def _relay_post(card: DecisionCard) -> Optional[str]:
+    """Post the card to the relay. An error string, or None. Never raises."""
+    try:
+        from awask.relay_post import post_card
+    except ImportError as exc:
+        return f"relay poster unavailable: {exc}"
+    try:
+        return post_card(card)
+    except Exception as exc:  # noqa: BLE001 - a notification must never fail a raise
+        return f"{exc.__class__.__name__}: {exc}"
