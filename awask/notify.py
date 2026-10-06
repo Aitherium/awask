@@ -234,7 +234,7 @@ def desk_alive(store_dir: Optional[Path] = None) -> bool:
     """Is awdesk running with its card watcher up, on THIS card store?
 
     The desk writes ``<store>/.desk-alive`` every 20 s (``startHeartbeat`` in
-    ``.DEPLOYMENT/awdesk/electron/decision-cards.cjs``); the file's mtime is the
+    awdesk's ``decision-cards.cjs``); the file's mtime is the
     liveness signal, and its CONTENT (``{"pid":…,"at":…}``) is informational —
     a killed app leaves the file behind, so existence alone proves nothing and a
     heartbeat older than :data:`DESK_ALIVE_STALE_SECONDS` reads as dead.
