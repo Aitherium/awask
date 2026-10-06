@@ -1,0 +1,34 @@
+# awask
+
+> Your agent asks you a question — and acts on your answer.
+
+A decision buried in terminal prose is a stream event — it scrolls past, and the agent either stalls waiting for someone who is not reading, or guesses and does days of the wrong work. Every agent framework can print a question; almost none can carry the ANSWER back into the run that asked it, so the human is a bottleneck exactly when they are least able to be one.
+
+## Install
+
+```
+pip install awask
+```
+
+## Use it in 30 seconds
+
+Ask a human a question from a script, and keep working on their answer.
+
+## Composes with
+
+- [awdk](https://aitherium.github.io/awdk/) — Build AI agent fleets — 3 lines, any backend, local or cloud.
+- [awrelay](https://aitherium.github.io/awrelay/) — Portable agent messaging — findings, alerts, coordination.
+- [awmail](https://aitherium.github.io/awmail/) — Give an agent an email address — send, and actually receive.
+- [awsh](https://aitherium.github.io/awsh/) — Your terminal answers you -- type a question where a command would go.
+- [awnest](https://aitherium.github.io/awnest/) — Prove there is a human before you let them into the nest.
+- [awrise](https://aitherium.github.io/awrise/) — Wake an agent on a schedule, let it do one thing, and put it back to sleep.
+
+## Where it lives
+
+- Repo: https://github.com/Aitherium/awask
+- Docs: https://aitherium.github.io/awask/
+- Manifest (keys + the one-line adoption story): https://aitherium.github.io/awask/aither-manifest.json
+
+This repository is mirrored from the AitherOS monorepo by `.github/workflows/sync-awask.yml`; hand edits made here are overwritten on the next sync — change the source instead.
+
+Everything Aitherium, in one file for agents: https://aitherium.com/llms.txt
