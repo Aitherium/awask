@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -86,42 +87,106 @@ def recently_raised(key: str) -> bool:
     return False
 
 
-def raise_card(session_id: str, message: str) -> bool:
+#: Claude Code notification types that mean "a human must act before this
+#: session moves". Anything else (auth_success, ...) is not an ask.
+WAITING_TYPES = {"permission_prompt", "idle_prompt", "elicitation_dialog"}
+
+#: Every card this hook raises carries this prefix in its dedupe key, so the
+#: UserPromptSubmit side (``--resolve``) can find and withdraw it.
+KEY_PREFIX = "cc-waiting:"
+
+
+def is_waiting(payload: dict, message: str) -> bool:
+    kind = str(payload.get("notification_type") or "").strip()
+    if kind:
+        return kind in WAITING_TYPES
+    low = message.lower()
+    return "permission" in low or "waiting for your input" in low
+
+
+def card_title(payload: dict) -> str:
+    """NOT "Your agent is waiting on you": triage_decision_cards.py closes that
+    title as a transient snapshot, which closed every one of these before any
+    surface showed it. The project name tells the owner WHICH terminal."""
+    cwd = str(payload.get("cwd") or "").strip().rstrip("/\\")
+    project = re.split(r"[/\\]", cwd)[-1] if cwd else ""
+    return "Claude Code needs you" + (": %s" % project if project else "")
+
+
+def _open_cards_for(store, session_id: str) -> list:
+    if not session_id:
+        return []
+    return [c for c in store.list(session_id=session_id)
+            if (c.dedupe_key or "").startswith(KEY_PREFIX + session_id + ":")]
+
+
+def raise_card(payload: dict, session_id: str, message: str) -> bool:
     try:
         from awask.store import DecisionCard, DecisionOption, DecisionSource, get_store
     except Exception:
         return False
     try:
+        store = get_store()
+        # One live card per session: the newest wait replaces the older one.
+        for old in _open_cards_for(store, session_id):
+            store.cancel(old.id, note="superseded by a newer wait in the same session")
         card = DecisionCard(
-            title="Your agent is waiting on you",
+            id="",
+            title=card_title(payload),
             summary=message.strip()[:2000],
-            facts=["This session cannot continue until you respond."],
+            kind="blocked",
+            facts=["This Claude Code session cannot continue until you respond in it.",
+                   "The card closes itself when you next type in that session."],
             options=[
                 DecisionOption(key="ack", label="I am looking now",
-                               consequence="the session keeps waiting for you in the terminal"),
+                               consequence="the session keeps waiting for you in the terminal",
+                               recommended=True),
                 DecisionOption(key="later", label="Not now",
                                consequence="the session stays blocked; nothing is lost"),
             ],
-            recommend="ack",
-            default="ack",
-            urgency="normal",
-            source=DecisionSource(session_id=session_id),
+            default_key="ack",
+            # high: channels.json gates the Discord DM (the one proven phone path)
+            # at urgency >= high; "normal" only ever badged the desk.
+            urgency="high",
+            dedupe_key="%s%s:%d" % (KEY_PREFIX, session_id, int(time.time())),
+            source=DecisionSource(session_id=session_id, agent="claude-code",
+                                  cwd=str(payload.get("cwd") or "")),
         )
-        get_store().create(card)
+        store.create(card)
         return True
-    except Exception:
+    except Exception as exc:
+        sys.stderr.write("[warn] awask_notification_card: raise failed: %s\n" % exc)
         return False
+
+
+def resolve(session_id: str) -> int:
+    """UserPromptSubmit: the owner is back in this session, so its wait is over."""
+    if not session_id:
+        return 0
+    try:
+        from awask.store import get_store
+        store = get_store()
+        cards = _open_cards_for(store, session_id)
+        for c in cards:
+            store.cancel(c.id, note="owner answered in the terminal")
+        return len(cards)
+    except Exception as exc:
+        sys.stderr.write("[warn] awask_notification_card: resolve failed: %s\n" % exc)
+        return 0
 
 
 def main() -> int:
     payload = read_payload()
-    message = str(payload.get("message") or "").strip()
-    if not message:
-        return _quiet()
     session_id = str(payload.get("session_id") or "").strip()
+    if "--resolve" in sys.argv:
+        resolve(session_id)
+        return _quiet()
+    message = str(payload.get("message") or "").strip()
+    if not message or not is_waiting(payload, message):
+        return _quiet()
     if recently_raised(fingerprint(session_id, message)):
         return _quiet()
-    raise_card(session_id, message)
+    raise_card(payload, session_id, message)
     return _quiet()
 
 
@@ -151,6 +216,14 @@ def self_test() -> int:
     os.environ["AITHER_DECISIONS_DIR"] = os.devnull
     check("an unusable state dir mutes rather than storms",
           recently_raised(fingerprint("x", "y")) is True)
+
+    check("a permission prompt is an ask", is_waiting({"notification_type": "permission_prompt"}, "x"))
+    check("auth_success is not an ask", not is_waiting({"notification_type": "auth_success"}, "x"))
+    check("legacy payload: permission text is an ask", is_waiting({}, "Claude needs your permission to use Bash"))
+    t = card_title({"cwd": "C:\\AitherOS-Fresh"})
+    check("title names the project", t == "Claude Code needs you: AitherOS-Fresh")
+    triage = re.compile(r"^(?:\d+\s+things?\s+(?:is|are)|your\s+agent\s+is)\s+waiting on you\s*$", re.I)
+    check("title escapes the transient triage rule", not triage.match(t))
 
     print("self-test", "passed" if ok else "FAILED")
     return 0 if ok else 1

@@ -56,6 +56,9 @@ HOOKS = {
     "stop_steer_drain.py": "Stop",
     "awask_mailbox_drain.py": "UserPromptSubmit",
     "awask_notification_card.py": "Notification",
+    # Withdraws that card when the owner types in the session again, so a phone
+    # ping never outlives the wait it announced.
+    "awask_notification_resolve.py": "UserPromptSubmit",
 }
 
 
