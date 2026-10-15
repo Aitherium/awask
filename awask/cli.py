@@ -213,6 +213,8 @@ def _cmd_ask_card_recipe(args: argparse.Namespace, store: DecisionStore) -> int:
     except CardRecipeError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    if (getattr(args, "subject", "") or "").strip():
+        card.subject = args.subject.strip()
     try:
         created = store.create(card)
     except DecisionError as exc:
@@ -339,6 +341,7 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
         credential_description=((args.credential_description or "").strip()
                                 if args.credential else None),
         credential_recipe=(recipe_id or None) if args.credential else None,
+        subject=(getattr(args, "subject", "") or "").strip(),
     )
 
     try:
@@ -928,6 +931,9 @@ def build_parser() -> argparse.ArgumentParser:
                           "GUI prompt (the owner answers with `awask answer <id>`)")
     ask.add_argument("--urgency", default="normal",
                      choices=("low", "normal", "high", "critical"))
+    ask.add_argument("--subject", default="", metavar="ID",
+                     help="the object this card concerns, e.g. svc:Secrets, "
+                          "secret:NAME, repo:owner/name, platform (off-grammar = none)")
     ask.add_argument("--session", default="", help="session id the answer routes back to")
     ask.add_argument("--transcript", default="", metavar="PATH",
                      help="the session transcript, so the card's context panel can show "

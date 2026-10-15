@@ -243,6 +243,24 @@ _RAW_CACHE_LOCK = threading.Lock()
 #: pinned here rather than trusted: an unbounded key would be an unbounded scan.
 _DEDUPE_RE = re.compile(r"^[A-Za-z0-9:._@+-]{1,160}$")
 
+#: The id grammar of a universe object: ``platform`` or ``<kind>:<rest>``
+#: (``svc:Secrets``, ``secret:STRIPE_API_KEY``, ``repo:owner/name``).
+_SUBJECT_RE = re.compile(r"^(platform|[a-z]+:[A-Za-z0-9._/@:-]{1,160})$")
+
+
+def normalize_subject(value: Any) -> str:
+    """``value`` when it is a well-formed universe object id, else ``""``.
+
+    The subject is THE UNIVERSE OBJECT THIS CARD CONCERNS -- a service, a node, a
+    secret, a session -- so a surface can draw the card on that object. It is
+    unrelated to the dedupe "same subject" prefix (:meth:`DecisionStore._dedupe_prefix`),
+    which is the identity of the QUESTION and never reads this field.
+    """
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    return text if _SUBJECT_RE.match(text) else ""
+
 
 class DecisionError(RuntimeError):
     """A card operation that could not be completed as asked."""
@@ -849,6 +867,12 @@ class DecisionCard:
     #: credential ask raised by a second session joins the open card instead of
     #: becoming a second card, and every waiter is resumed when it closes.
     waiters: list[DecisionSource] = field(default_factory=list)
+    #: The universe object this card concerns (``svc:Secrets``, ``secret:NAME``,
+    #: ``session:<id>``, ``platform``), so a surface can glow the card on it.
+    #: UNRELATED to the dedupe "same subject" prefix (``_dedupe_prefix``), which
+    #: identifies the question, not the object. "" = not attached to anything;
+    #: anything off-grammar is normalised to "" by :func:`normalize_subject`.
+    subject: str = ""
 
     # ── derived helpers ────────────────────────────────────────────────────────
 
@@ -966,6 +990,7 @@ class DecisionCard:
                          if isinstance(raw.get("recipe_vars"), dict) else {}),
             waiters=[DecisionSource.from_dict(w) for w in (raw.get("waiters") or [])
                      if isinstance(w, dict)],
+            subject=normalize_subject(raw.get("subject")),
         )
 
 
@@ -1063,6 +1088,10 @@ class DecisionStore:
         ``blocking=True`` (the raiser waits on the answer) makes a credential ask
         default to ``high`` urgency.
 
+        ``subject`` (the universe object this card concerns) is normalised by
+        :func:`normalize_subject`; a credential ask with none defaults to
+        ``secret:<secret_name>``. It plays no part in either dedupe guard.
+
         Both guards are a read-then-write, and the producer that raises them is a
         FRESH PROCESS on every failing pass, so the scan and the write are held
         under the directory lock (an OS file lock). Without it, overlapping
@@ -1070,6 +1099,10 @@ class DecisionStore:
         for a single streak, which is precisely the storm the dedupe key exists
         to prevent.
         """
+        card.subject = normalize_subject(card.subject)
+        if (not card.subject and (card.kind or "").strip().lower() == "credential"
+                and card.secret_name):
+            card.subject = normalize_subject(f"secret:{card.secret_name}")
         with self._lock:
             if (card.kind or "").strip().lower() == "credential":
                 family = credential_dedupe_key(card)

@@ -251,6 +251,11 @@ def raise_card(payload: dict, session_id: str, message: str) -> bool:
             source=DecisionSource(session_id=session_id, agent="claude-code",
                                   cwd=str(payload.get("cwd") or "")),
         )
+        # The universe object this card is drawn on: the waiting session. Set as an
+        # attribute (not a constructor kwarg) so an older store without the field
+        # still raises the card; the store normalises an off-grammar id to "".
+        if session_id:
+            card.subject = "session:%s" % session_id
         store.create(card)
         return True
     except Exception as exc:

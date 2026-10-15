@@ -596,8 +596,12 @@ def start_credential_ask(
     cwd: str = "",
     task: str = "",
     harness: str = "",
+    subject: str = "",
 ) -> dict[str, Any]:
     """The non-blocking half of ask_credential: check, raise or join, prompt.
+
+    ``subject`` is the universe object the ask concerns; the store defaults it
+    to ``secret:<secret_name>`` when empty.
 
     Returns ``{present: True}`` when the vault already holds the name (no card),
     an ``{"ok": False, "error"}`` for a bad ask, or ``{card_id, waiter, ...}``.
@@ -668,6 +672,7 @@ def start_credential_ask(
                 credential_scope=want_scope,
                 credential_description=desc,
                 credential_recipe=recipe_id or None,
+                subject=(subject or "").strip(),
             )
             try:
                 card = store.create(candidate)
