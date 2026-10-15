@@ -22,6 +22,7 @@ Ask a human a question from a script, and keep working on their answer.
 - [awsh](https://aitherium.github.io/awsh/) — Your terminal answers you -- type a question where a command would go.
 - [awnest](https://aitherium.github.io/awnest/) — Prove there is a human before you let them into the nest.
 - [awrise](https://aitherium.github.io/awrise/) — Wake an agent on a schedule, let it do one thing, and put it back to sleep.
+- [awdiscord](https://aitherium.github.io/awdiscord/) — Put any agent on Discord as a real bot, with an operator in the loop.
 
 ## Where it lives
 
