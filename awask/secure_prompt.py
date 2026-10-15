@@ -701,8 +701,13 @@ def close_with_receipt(card_id: str, store: DecisionStore, receipt: Any,
 #: consumer whose stored value was refused (the mail poller's IMAP login) raises
 #: its card with "refused" in the TITLE for exactly this reason. (Not a dedupe
 #: key: the store re-keys every credential card to its secret family.)
+#: 2026-10-14: "Proton Bridge password for owner@... (inbound mail stopped)" was closed as
+#: "already in vault" -- the stored value was the broken one. An ask that names a FAILURE
+#: (stopped, dead, failing, wrong, invalid, re-enter, no such user) is a replacement ask.
 _REPLACE_ASK = re.compile(r"\b(rotat\w*|replac\w*|re-?issu\w*|refused|rejected|expired|"
-                          r"revoked|stale|new (?:token|key|password))\b", re.IGNORECASE)
+                          r"revoked|stale|new (?:token|key|password)|stopped|dead|"
+                          r"fail(?:ed|ing|s)?|wrong|invalid|re-?enter\w*|no such user)\b",
+                          re.IGNORECASE)
 
 #: ``presence(name, scope) -> int``: the stored LENGTH (>0 present, 0 absent,
 #: <0 could not tell). Names and lengths only; a value never crosses it.
