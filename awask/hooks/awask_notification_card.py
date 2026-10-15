@@ -26,6 +26,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 #: Do not re-raise the same notification for this long.
 COOLDOWN_SECONDS = float(os.getenv("AWASK_NOTIFY_COOLDOWN", "900"))
@@ -104,13 +105,109 @@ def is_waiting(payload: dict, message: str) -> bool:
     return "permission" in low or "waiting for your input" in low
 
 
-def card_title(payload: dict) -> str:
+#: How much of a transcript's tail to read. A session JSONL reaches tens of MB; the
+#: context a card needs is always in the last few turns.
+_TAIL_BYTES = 600_000
+
+
+def _clip(text: str, n: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1].rstrip() + "…"
+
+
+def _texts(content) -> list:
+    if isinstance(content, str):
+        return [content]
+    out = []
+    for part in content or []:
+        if isinstance(part, dict) and part.get("type") == "text":
+            out.append(part.get("text") or "")
+    return out
+
+
+def _owner_typed(text: str) -> bool:
+    """A user-role record the OWNER typed -- not a hook/system/task notice."""
+    t = text.lstrip()
+    return bool(t) and not t.startswith(("<", "Stop hook", "[SYSTEM", "Caveat:"))
+
+
+def _describe_tool(block: dict) -> str:
+    name = str(block.get("name") or "a tool")
+    args = block.get("input") or {}
+    for key in ("command", "file_path", "path", "url", "pattern", "description", "prompt"):
+        if isinstance(args, dict) and args.get(key):
+            return "%s: %s" % (name, _clip(args[key], 160))
+    return name
+
+
+def transcript_context(path: str) -> dict:
+    """What the owner needs to decide from a phone: what the session is about, what
+    they last asked, what Claude last said, and (for a permission prompt) the exact
+    tool call waiting. 2026-10-14 owner: the card "doesn't even tell me wtf the
+    context or ask is". Every field is optional; a missing/unreadable transcript
+    yields {} and the card still raises."""
+    ctx: dict = {}
+    try:
+        p = Path(path)
+        size = p.stat().st_size
+        with open(p, "rb") as fh:
+            if size > _TAIL_BYTES:
+                fh.seek(size - _TAIL_BYTES)
+                fh.readline()  # drop the partial first line
+            raw = fh.read().decode("utf-8", "replace")
+    except (OSError, ValueError, TypeError):
+        return ctx
+    for line in raw.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        kind = rec.get("type")
+        if kind == "custom-title" and rec.get("customTitle"):
+            ctx["title"] = str(rec["customTitle"])
+        elif kind == "last-prompt" and rec.get("lastPrompt"):
+            ctx["asked"] = str(rec["lastPrompt"])
+        elif kind in ("user", "assistant"):
+            msg = rec.get("message") or {}
+            content = msg.get("content")
+            if kind == "user":
+                typed = [t for t in _texts(content) if _owner_typed(t)]
+                if typed:
+                    ctx["asked"] = typed[-1]
+            else:
+                said = [t for t in _texts(content) if t.strip()]
+                if said:
+                    ctx["said"] = said[-1]
+                tools = [b for b in (content or []) if isinstance(b, dict)
+                         and b.get("type") == "tool_use"]
+                ctx["pending_tool"] = _describe_tool(tools[-1]) if tools else ""
+    return ctx
+
+
+def card_summary(message: str, ctx: dict, notification_type: str) -> str:
+    lines = ["Waiting: %s" % _clip(message, 300)]
+    if notification_type == "permission_prompt" and ctx.get("pending_tool"):
+        lines.append("Wants to run: %s" % ctx["pending_tool"])
+    if ctx.get("asked"):
+        lines.append("You asked: %s" % _clip(ctx["asked"], 300))
+    if ctx.get("said"):
+        lines.append("Claude last said: %s" % _clip(ctx["said"], 500))
+    return "\n".join(lines)[:2000]
+
+
+def card_title(payload: dict, ctx: Optional[dict] = None) -> str:
     """NOT "Your agent is waiting on you": triage_decision_cards.py closes that
     title as a transient snapshot, which closed every one of these before any
     surface showed it. The project name tells the owner WHICH terminal."""
     cwd = str(payload.get("cwd") or "").strip().rstrip("/\\")
     project = re.split(r"[/\\]", cwd)[-1] if cwd else ""
-    return "Claude Code needs you" + (": %s" % project if project else "")
+    title = "Claude Code needs you" + (": %s" % project if project else "")
+    topic = (ctx or {}).get("title") or (ctx or {}).get("asked") or ""
+    if topic and topic != project:
+        title += " -- " + _clip(topic, 70)
+    return title[:200]
 
 
 def _open_cards_for(store, session_id: str) -> list:
@@ -130,10 +227,12 @@ def raise_card(payload: dict, session_id: str, message: str) -> bool:
         # One live card per session: the newest wait replaces the older one.
         for old in _open_cards_for(store, session_id):
             store.cancel(old.id, note="superseded by a newer wait in the same session")
+        ctx = transcript_context(str(payload.get("transcript_path") or ""))
+        kind = str(payload.get("notification_type") or "")
         card = DecisionCard(
             id="",
-            title=card_title(payload),
-            summary=message.strip()[:2000],
+            title=card_title(payload, ctx),
+            summary=card_summary(message, ctx, kind),
             kind="blocked",
             facts=["This Claude Code session cannot continue until you respond in it.",
                    "The card closes itself when you next type in that session."],
@@ -224,6 +323,29 @@ def self_test() -> int:
     check("title names the project", t == "Claude Code needs you: AitherOS-Fresh")
     triage = re.compile(r"^(?:\d+\s+things?\s+(?:is|are)|your\s+agent\s+is)\s+waiting on you\s*$", re.I)
     check("title escapes the transient triage rule", not triage.match(t))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tp = Path(tmp) / "t.jsonl"
+        recs = [
+            {"type": "custom-title", "customTitle": "fix the mail plane"},
+            {"type": "user", "message": {"role": "user", "content": "deploy the relay fix"}},
+            {"type": "user", "message": {"role": "user", "content": "<task-notification>x"}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "Restarting the relay now."},
+                {"type": "tool_use", "name": "Bash",
+                 "input": {"command": "systemctl restart aither-relay"}}]}},
+        ]
+        tp.write_text("\n".join(json.dumps(r) for r in recs), encoding="utf-8")
+        ctx = transcript_context(str(tp))
+        check("context: the owner's ask, not a task notice", ctx.get("asked") == "deploy the relay fix")
+        check("context: Claude's last words", ctx.get("said") == "Restarting the relay now.")
+        summ = card_summary("Claude needs your permission to use Bash", ctx, "permission_prompt")
+        check("summary names the exact command waiting",
+              "systemctl restart aither-relay" in summ and "You asked: deploy" in summ)
+        check("title carries the session topic",
+              card_title({"cwd": "C:\\X"}, ctx) == "Claude Code needs you: X -- fix the mail plane")
+    check("an unreadable transcript is empty context, not a crash",
+          transcript_context(os.path.join(os.devnull, "nope.jsonl")) == {})
 
     print("self-test", "passed" if ok else "FAILED")
     return 0 if ok else 1
