@@ -1747,6 +1747,15 @@ class DecisionStore:
                         f"credential card {card_id} closes only with "
                         f"{DecisionCard.CREDENTIAL_ANSWER!r} — the value goes to "
                         "the vault via secure_prompt, never the card")
+                # The marker alone is one constant string anybody can send, so
+                # it never closes a credential card on its own: the vault door
+                # attaches the receipt of what it stored. Verifying the
+                # signature is the door's job (secure_prompt.verify_receipt);
+                # the store refuses the receipt-less close outright.
+                if not isinstance(receipt, dict):
+                    raise DecisionError(
+                        f"credential card {card_id} closes only with a vault "
+                        "receipt — store the value through the masked prompt")
             if card.options:
                 opt = card.option(picked)
                 if opt is None:
@@ -1936,7 +1945,8 @@ class DecisionStore:
                     out["renoted"].append(card.id)
         return out
 
-    def resolve(self, card_id: str, *, note: str = "") -> DecisionCard:
+    def resolve(self, card_id: str, *, note: str = "",
+                receipt: Optional[dict[str, Any]] = None) -> DecisionCard:
         """Close a card the raising agent has fulfilled itself: a promise KEPT,
         or a `blocked` card whose blocker went away.
 
@@ -1960,6 +1970,10 @@ class DecisionStore:
             card.answer_note = note or "resolved by the agent that raised it"
             card.answered_at = time.time()
             card.answered_via = "agent"
+            if receipt is not None:
+                # Same lock, same write: a credential card resolved because its
+                # secret is already in the vault keeps the presence receipt.
+                card.credential_receipt = dict(receipt)
             self._write(card)
         self._sync_relay(card)
         return card

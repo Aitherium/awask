@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "awask"
-version = "0.1.4"
+version = "0.1.5"
 description = "Your agent asks you a question — and acts on your answer. Durable decision cards for agents: a structured ask, delivered wherever you are, whose answer steers the run that raised it."
 readme = "README.md"
 license = { file = "LICENSE" }
