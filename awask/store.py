@@ -1739,7 +1739,24 @@ class DecisionStore:
         The mailbox is the only path into an interactive Claude Code tab: its TUI
         has no IPC, but its UserPromptSubmit/Stop hooks read this directory. Without
         this step a card is a survey, not a control.
+
+        A card with recorded WAITERS (``ask_credential``) is delivered to every
+        one of them instead -- including a waiter whose session has ended, which
+        is resumed rather than left a mailbox nobody reads (steerback).
         """
+        try:
+            from awask import steerback
+
+            if steerback.load_waiters(self, card.id):
+                steerback.deliver_waiters(self, card)
+                # The waiters file records where each delivery went; truthy so
+                # callers do not report "this card names no session".
+                return steerback.waiters_file(self, card.id)
+        except Exception as exc:  # noqa: BLE001 - the answer is already on disk
+            # Fall through to the single-session mailbox: a degraded delivery
+            # beats none, and the reason is said rather than swallowed.
+            print(f"[decisions] waiter delivery for {card.id} failed "
+                  f"({exc.__class__.__name__}: {exc}); mailbox only", file=sys.stderr)
         chosen = card.option(card.answer or "")
         lines = [
             f"# Owner answered decision card {card.id}",

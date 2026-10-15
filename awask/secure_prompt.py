@@ -124,8 +124,12 @@ def gui_prompt_argv(card: DecisionCard, root: Path) -> list[str]:
     return argv
 
 
-def launch_gui_prompt(card: DecisionCard) -> "tuple[bool, str]":
+def launch_gui_prompt(card: DecisionCard,
+                      pid_out: "Optional[list[int]]" = None) -> "tuple[bool, str]":
     """Open the masked GUI for a credential card, detached. Returns (launched, why).
+
+    ``pid_out``, when given, receives the window's pid so a later ask can tell
+    "the window is still up" from "the owner closed it -- open it again".
 
     Never raises: a card that cannot get a window is still a card, and the
     caller prints ``why`` so the owner knows to use ``awask answer <id>``
@@ -170,13 +174,15 @@ def launch_gui_prompt(card: DecisionCard) -> "tuple[bool, str]":
     else:
         extra["start_new_session"] = True
     try:
-        subprocess.Popen(
+        proc = subprocess.Popen(
             argv, cwd=str(root), stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **extra,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, (f"masked prompt failed to launch ({type(exc).__name__}: {exc}); "
                        f"answer at a terminal with: awask answer {card.id}")
+    if pid_out is not None:
+        pid_out.append(proc.pid)
     return True, (f"masked prompt launched for {card.secret_name or card.id} — "
                   f"it closes {card.id} itself once the vault confirms the write")
 
