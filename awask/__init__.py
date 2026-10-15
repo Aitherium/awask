@@ -64,7 +64,7 @@ from awask.store import (
     get_store,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.1.3"
 
 __all__ = [
     "STATUS_ANSWERED",

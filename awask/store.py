@@ -114,6 +114,59 @@ CLOSED_STATUSES = frozenset({STATUS_ANSWERED, STATUS_EXPIRED, STATUS_CANCELLED})
 
 URGENCIES = ("low", "normal", "high", "critical")
 
+#: An ``info`` card is context, not a question ("Nothing to click -- this is
+#: context"): left open, it sat in the queue forever and popped like a decision.
+#: Owner, 2026-10-07, on an hourly digest still open as "30 of 30". With no
+#: deadline of its own, an info card closes after this many seconds. Override:
+#: ``AITHER_DECISIONS_INFO_TTL_HOURS``.
+INFO_TTL_SECONDS = 6 * 3600
+
+#: A card open longer than this is a STRAGGLER. It is never closed for being old
+#: (see :meth:`DecisionStore.sweep`: an unanswered question does not stop
+#: mattering), but the interrupting queue shows fresh cards first and stragglers
+#: after them -- measured 2026-10-07: 30 open cards, the oldest 27 days, and the
+#: window opened on that one every time. Override: ``AITHER_DECISIONS_STALE_DAYS``.
+STALE_AFTER_SECONDS = 7 * 24 * 3600
+
+
+def _env_seconds(name: str, default: float, unit: float) -> float:
+    raw = os.getenv(name, "").strip()
+    try:
+        value = float(raw) * unit if raw else default
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def info_ttl_seconds() -> float:
+    return _env_seconds("AITHER_DECISIONS_INFO_TTL_HOURS", INFO_TTL_SECONDS, 3600)
+
+
+def stale_after_seconds() -> float:
+    return _env_seconds("AITHER_DECISIONS_STALE_DAYS", STALE_AFTER_SECONDS, 86400)
+
+
+def is_straggler(card: "DecisionCard", now: Optional[float] = None) -> bool:
+    """Open, and older than the staleness line."""
+    t = time.time() if now is None else now
+    return card.is_open and (t - card.created_at) > stale_after_seconds()
+
+
+def queue_order(cards: "Iterable[DecisionCard]",
+                now: Optional[float] = None) -> "list[DecisionCard]":
+    """The order the INTERRUPTING window walks: fresh cards first, oldest-first
+    among them (the longest-blocking fresh card leads, as :meth:`list` intends);
+    then stragglers, oldest-first. Nothing is dropped -- only reordered."""
+    items = list(cards)
+    t = time.time() if now is None else now
+    fresh = [c for c in items if not is_straggler(c, t)]
+    stale = [c for c in items if is_straggler(c, t)]
+
+    def key(c: "DecisionCard") -> float:
+        return c.created_at
+
+    return sorted(fresh, key=key) + sorted(stale, key=key)
+
 #: Card ids are typed by humans ("awask answer d-7f3a 2"), so they are short
 #: and use an unambiguous alphabet — no 0/o/1/l.
 _ID_ALPHABET = "23456789abcdefghjkmnpqrstuvwxyz"
@@ -1379,9 +1432,14 @@ class DecisionStore:
     def _expire_if_due(self, card: DecisionCard) -> bool:
         """Flip an overdue open card to expired, applying its default. Returns True
         if this call performed the transition."""
-        if not card.is_open or card.deadline is None:
+        if not card.is_open:
             return False
-        if time.time() < card.deadline:
+        due = card.deadline
+        info_ttl = due is None and card.kind == "info"
+        if info_ttl:
+            # Context, not a question: closes on its own (INFO_TTL_SECONDS).
+            due = card.created_at + info_ttl_seconds()
+        if due is None or time.time() < due:
             return False
         with self._lock:
             fresh = self.get(card.id)
@@ -1390,8 +1448,14 @@ class DecisionStore:
             fresh.status = STATUS_EXPIRED
             fresh.answer = fresh.default_key or None
             fresh.answered_at = time.time()
-            fresh.answered_via = "deadline"
-            fresh.answer_note = "no answer before the deadline; the declared default applied"
+            if info_ttl:
+                fresh.answered_via = "info-ttl"
+                fresh.answer_note = ("context card closed on its own after "
+                                     f"{info_ttl_seconds() / 3600:g}h; it was never a question")
+            else:
+                fresh.answered_via = "deadline"
+                fresh.answer_note = ("no answer before the deadline; the declared default "
+                                     "applied")
             self._write(fresh)
             card.status = fresh.status
             card.answer = fresh.answer
