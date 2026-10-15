@@ -307,7 +307,7 @@ class CardWindow:
         return self.queue[min(self.index, len(self.queue) - 1)]
 
     def _refresh_queue(self) -> list[DecisionCard]:
-        """Open cards, fresh first then stragglers (queue_order), re-read every render.
+        """Open cards in queue order (store.rank), re-read from the store on every render.
 
         Re-reading is what lets one window absorb cards raised while it is up —
         the alternative (snapshot at startup) is how a second window used to get
@@ -320,7 +320,8 @@ class CardWindow:
         if self._injected:
             known = {c.id for c in cards}
             cards = [c for c in self._injected if c.id not in known] + cards
-        # Fresh cards lead; stragglers (open past the staleness line) follow.
+        # One ordering for every surface: credential/blocked asks lead, then
+        # urgency; fresh cards before stragglers; oldest first within a tier.
         # Measured 2026-10-07: the queue opened on a 27-day-old card every time.
         return queue_order(cards)
 
@@ -1286,7 +1287,8 @@ class CardWindow:
         from awask.store import DecisionError
 
         try:
-            self.store.cancel(self.card.id, note="acknowledged from the card window")
+            self.store.cancel(self.card.id, note="acknowledged from the card window",
+                              via="owner")
             self.handled += 1
         except DecisionError as exc:
             self._flash(str(exc), RED)

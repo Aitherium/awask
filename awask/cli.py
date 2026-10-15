@@ -342,7 +342,11 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
     )
 
     try:
-        card = store.create(card)
+        # --wait means this session is BLOCKED on the answer: a credential ask
+        # from a blocked session defaults to high urgency in the store.
+        built = card
+        card = store.create(card, blocking=bool(args.wait))
+        joined = card is not built
     except DecisionError as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
@@ -356,7 +360,13 @@ def cmd_ask(args: argparse.Namespace, store: DecisionStore) -> int:
     # polls the vault for a change, is re-creating the failure this removes.
     prompt_line = ""
     if kind == "credential":
-        if args.no_prompt:
+        if joined:
+            # Another session already asked for this secret family: this
+            # session now WAITS on that card. A second masked prompt for one
+            # secret is the duplicate the dedupe exists to remove.
+            prompt_line = (f"joined the open ask {card.id} for this secret; the answer "
+                           f"reaches this session too (awask answer {card.id})")
+        elif args.no_prompt:
             prompt_line = (f"masked prompt not launched (--no-prompt); "
                            f"answer with: awask answer {card.id}")
         elif desk_alive():
@@ -427,7 +437,8 @@ def _wait_for_answer(
 
 def cmd_list(args: argparse.Namespace, store: DecisionStore) -> int:
     status = None if args.all else STATUS_OPEN
-    cards = store.list(status=status, session_id=args.session or "")
+    cards = store.list(status=status, session_id=args.session or "",
+                       order=getattr(args, "order", "age") or "age")
     if args.json:
         print(json.dumps([c.to_dict() for c in cards], indent=2))
         return 0
@@ -552,11 +563,35 @@ def cmd_window(args: argparse.Namespace, store: DecisionStore) -> int:
 
 def cmd_cancel(args: argparse.Namespace, store: DecisionStore) -> int:
     try:
-        card = store.cancel(args.id, note=args.note or "")
+        # ``by`` is THIS session: the raiser may withdraw its own card without a
+        # reason; anyone else must give --note (the store refuses otherwise).
+        card = store.cancel(args.id, note=args.note or "",
+                            by=_detect_session_id("") or None)
     except DecisionError as exc:
         print(str(exc), file=sys.stderr)
         return 1
     print(f"{card.id} withdrawn")
+    return 0
+
+
+def cmd_reconcile(args: argparse.Namespace, store: DecisionStore) -> int:
+    """Cancel every open card under a dedupe-key prefix, and re-note the ones
+    already cancelled in silence -- each with an audited reason."""
+    by = _detect_session_id("") or os.getenv("USERNAME", "") or os.getenv("USER", "") or "cli"
+    try:
+        result = store.reconcile(args.dedupe_prefix, args.reason, by=by)
+    except DecisionError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, indent=2))
+    else:
+        print(f"reconciled {args.dedupe_prefix!r}: {len(result['cancelled'])} cancelled, "
+              f"{len(result['renoted'])} re-noted")
+        for cid in result["cancelled"]:
+            print(f"  cancelled {cid}")
+        for cid in result["renoted"]:
+            print(f"  re-noted  {cid}")
     return 0
 
 
@@ -917,6 +952,9 @@ def build_parser() -> argparse.ArgumentParser:
     listing = sub.add_parser("list", help="what is waiting")
     listing.add_argument("--all", action="store_true", help="include closed cards")
     listing.add_argument("--session", default="")
+    listing.add_argument("--order", default="age", choices=("age", "queue"),
+                         help="age: oldest first; queue: the shared rank "
+                              "(credential/blocked, urgency, age)")
     listing.add_argument("--json", action="store_true")
 
     show = sub.add_parser("show", help="one card in full")
@@ -950,7 +988,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     cancel = sub.add_parser("cancel", help="withdraw a card you no longer need answered")
     cancel.add_argument("id")
-    cancel.add_argument("--note", default="")
+    cancel.add_argument("--note", default="",
+                        help="why it is withdrawn (required unless you raised it)")
+
+    reconcile = sub.add_parser(
+        "reconcile",
+        help="cancel open cards under a dedupe-key prefix, and re-note silent cancels")
+    reconcile.add_argument("--dedupe-prefix", required=True, metavar="P")
+    reconcile.add_argument("--reason", required=True, metavar="R",
+                           help="recorded on every card touched")
+    reconcile.add_argument("--json", action="store_true")
 
     promise = sub.add_parser(
         "promise", help="record work owed (an agent commitment with a due time)")
@@ -1036,6 +1083,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "credential-verify": cmd_credential_verify,
         "window": cmd_window,
         "cancel": cmd_cancel,
+        "reconcile": cmd_reconcile,
         "promise": cmd_promise,
         "resolve": cmd_resolve,
         "watch": cmd_watch,

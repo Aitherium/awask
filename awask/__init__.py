@@ -62,9 +62,10 @@ from awask.store import (
     DecisionOption,
     DecisionStore,
     get_store,
+    rank,
 )
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 __all__ = [
     "STATUS_ANSWERED",
@@ -76,4 +77,5 @@ __all__ = [
     "DecisionStore",
     "__version__",
     "get_store",
+    "rank",
 ]

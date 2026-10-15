@@ -39,7 +39,7 @@ def test_resolve_is_not_cancel(tmp_path):
     """Cancelled reads as WITHDRAWN; a kept promise must not."""
     store = _store(tmp_path)
     kept = store.resolve(_promise(store, "a").id)
-    withdrawn = store.cancel(_promise(store, "b").id)
+    withdrawn = store.cancel(_promise(store, "b").id, note="no longer owed")
     assert kept.status == STATUS_ANSWERED and withdrawn.status == STATUS_CANCELLED
 
 

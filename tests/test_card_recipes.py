@@ -170,7 +170,7 @@ class TestDedupe:
         assert again.id == first.id
         assert len(list((tmp_path / "cards").glob("d-*.json"))) == 1
 
-    @pytest.mark.parametrize("closer", ["answer", "cancel"])
+    @pytest.mark.parametrize("closer", ["answer", "owner-dismiss"])
     def test_a_closed_card_is_not_re_raised_for_the_same_streak(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, closer: str
     ) -> None:
@@ -182,7 +182,7 @@ class TestDedupe:
         if closer == "answer":
             store.answer(first.id, "keep", via="test", deliver=False)
         else:
-            store.cancel(first.id, note="test")
+            store.cancel(first.id, note="test", via="owner")
         again = store.create(build_card("wake-failed", VARS))
         assert again.id == first.id
         assert len(list((tmp_path / "cards").glob("d-*.json"))) == 1
