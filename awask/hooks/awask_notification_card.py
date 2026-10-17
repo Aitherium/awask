@@ -287,7 +287,67 @@ def owner_need(said: str) -> str:
     return ""
 
 
+#: Token shapes that are a credential wherever they appear.
+_TOKEN_RES = (
+    re.compile(r"\b(?:sk-ant-|sk-|sk_live_|sk_test_|pk_live_|rk_live_|ghp_|gho_|ghs_|ghu_"
+               r"|github_pat_|xox[abposr]-|aither_sk_[a-z]+_|AKIA|ASIA|AIza)[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)",
+               re.DOTALL),
+)
+#: "Secret <value>", "password: <value>", "api_key=<value>" ...
+_LABELLED_RE = re.compile(
+    r"(?i)\b(secret|password|passwd|passcode|pwd|token|api[ _-]?key|access[ _-]?key"
+    r"|private[ _-]?key|client[ _-]?secret|app[ _-]?password|bearer|authorization)"
+    r"(\s*[:=]\s*|\s+)([\"']?)([^\s\"',;]{6,})")
+#: A long random-looking word: upper, lower AND digit (a git sha or a path is not).
+_RANDOM_RE = re.compile(r"(?<![A-Za-z0-9_\-])[A-Za-z0-9_\-]{32,}(?![A-Za-z0-9_\-])")
+REDACTED = "[redacted]"
+
+
+def _looks_random(word: str) -> bool:
+    return (any(c.isupper() for c in word) and any(c.islower() for c in word)
+            and any(c.isdigit() for c in word))
+
+
+def redact_secrets(text: str) -> str:
+    """The text with every credential-shaped value replaced by ``[redacted]``.
+
+    A card leaves the machine (the Discord DM is its phone path), and its summary
+    quotes what the owner typed: measured 2026-10-17, an OAuth client secret pasted
+    into a prompt reached a card verbatim. A labelled value is masked when the label is
+    followed by ``:``/``=`` (any value) or by a space and a value that looks random.
+    """
+    out = str(text or "")
+    for rx in _TOKEN_RES:
+        out = rx.sub(REDACTED, out)
+
+    def _labelled(m: "re.Match") -> str:
+        value = m.group(4)
+        if value == REDACTED or value.startswith("[redacted"):
+            return m.group(0)
+        if not m.group(2).strip() and not (_looks_random(value) or len(value) >= 16
+                                           and any(c.isdigit() for c in value)):
+            return m.group(0)
+        return m.group(1) + m.group(2) + m.group(3) + REDACTED
+
+    out = _LABELLED_RE.sub(_labelled, out)
+    return _RANDOM_RE.sub(lambda m: REDACTED if _looks_random(m.group(0)) else m.group(0), out)
+
+
+def _redacted_ctx(ctx: Optional[dict]) -> dict:
+    """``ctx`` with every quoted text redacted BEFORE it is clipped (a clip can cut a
+    secret to a fragment no pattern recognises)."""
+    out = dict(ctx or {})
+    for key in ("title", "asked", "said", "pending_tool"):
+        if out.get(key):
+            out[key] = redact_secrets(out[key])
+    return out
+
+
 def card_summary(message: str, ctx: dict, notification_type: str, need: str = "") -> str:
+    ctx = _redacted_ctx(ctx)
+    message, need = redact_secrets(message), redact_secrets(need)
     lines = ["Needs: %s" % _clip(need or message, 240)]
     if notification_type == "permission_prompt" and ctx.get("pending_tool") \
             and ctx["pending_tool"] not in (need or ""):
@@ -296,7 +356,7 @@ def card_summary(message: str, ctx: dict, notification_type: str, need: str = ""
         lines.append("You asked: %s" % _clip(ctx["asked"], 300))
     if ctx.get("said") and _clip(ctx["said"], 500) not in (need or ""):
         lines.append("Claude last said: %s" % _clip(ctx["said"], 500))
-    return "\n".join(lines)[:2000]
+    return redact_secrets("\n".join(lines))[:2000]
 
 
 def card_title(payload: dict, ctx: Optional[dict] = None) -> str:
@@ -306,10 +366,11 @@ def card_title(payload: dict, ctx: Optional[dict] = None) -> str:
     cwd = str(payload.get("cwd") or "").strip().rstrip("/\\")
     project = re.split(r"[/\\]", cwd)[-1] if cwd else ""
     title = "Claude Code needs you" + (": %s" % project if project else "")
-    topic = (ctx or {}).get("title") or (ctx or {}).get("asked") or ""
+    ctx = _redacted_ctx(ctx)
+    topic = ctx.get("title") or ctx.get("asked") or ""
     if topic and topic != project:
         title += " -- " + _clip(topic, 70)
-    return title[:200]
+    return redact_secrets(title)[:200]
 
 
 def _open_cards_for(store, session_id: str) -> list:

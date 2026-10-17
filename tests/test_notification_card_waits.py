@@ -110,3 +110,49 @@ def test_the_card_key_is_stable_within_one_wait(tmp_path, monkeypatch):
     assert first and hook.begin_wait("s9") is None, "second event in the same wait"
     assert hook.wait_key("s9").startswith(hook.KEY_PREFIX + "s9:")
     assert hook.wait_key("s9") == hook.wait_key("s9")
+
+
+# --- a card leaves the machine: what the owner pasted must not ride on it -----------
+# Measured 2026-10-17: a prompt carrying an OAuth app's client secret ("Application ID
+# <id> Secret <value> ...") reached a "Claude Code needs you" card's "You asked:" line
+# verbatim, and urgency=high cards are DMed to Discord. Fake values are assembled at
+# runtime so no secret-shaped literal sits in the repo.
+_FAKE = "".join(["Qz7aB3dE5f", "G7hJ9kL1mN", "3pQ5rS7tU9", "vW1xY3z_Ab"])
+_FAKE_ID = "".join(["SuXy", "Q9w2", "Ee7r", "Tt5y", "Uu3i", "Oo1p", "Aa8s", "Dd6f"])
+
+
+def test_a_pasted_client_secret_never_reaches_the_card():
+    ctx = {"asked": f"Application: aither Application ID {_FAKE_ID} Secret {_FAKE} "
+                    "Icon None Scope default",
+           "said": "Decide: publish Android 0.3.28 to GitHub?"}
+    summ = hook.card_summary("Claude is waiting", ctx, "idle_prompt",
+                             "publish Android 0.3.28 to GitHub?")
+    title = hook.card_title({"cwd": "C:\\AitherOS-Fresh"}, {"asked": ctx["asked"]})
+    for text in (summ, title):
+        assert _FAKE not in text and _FAKE[:12] not in text
+        assert _FAKE_ID not in text
+    assert "You asked: Application: aither" in summ
+    assert "publish Android 0.3.28" in summ
+
+
+def test_a_secret_cut_by_the_clip_is_still_masked():
+    asked = "x " * 140 + f"Secret {_FAKE}"  # the clip at 300 chars lands inside it
+    summ = hook.card_summary("waiting", {"asked": asked}, "idle_prompt", "ok?")
+    assert _FAKE[:6] not in summ
+
+
+def test_labelled_and_known_token_shapes_are_masked():
+    gh = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2"
+    cases = ["password: " + "hunter" + "twelve", "api_key=" + "k" * 4 + "9" * 6,
+             f"use token {gh} now", "app password " + "abcd" * 3 + "1234"]
+    for text in cases:
+        assert "[redacted]" in hook.redact_secrets(text), text
+    assert gh not in hook.redact_secrets(f"use token {gh} now")
+
+
+def test_redaction_leaves_ordinary_prose_shas_and_paths_alone():
+    for text in ("the token economy earns credits", "password reset flow is broken",
+                 "commit 4481001f69a2b3c4d5e6f708192a3b4c5d6e7f80 landed",
+                 "AitherOS/lib/support/mail_evidence.py line 407",
+                 "Waiting on the full gate run."):
+        assert hook.redact_secrets(text) == text, text
