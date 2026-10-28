@@ -163,7 +163,7 @@ def test_native_toast_is_skipped_while_quiet(monkeypatch):
 # ── the masked credential prompt ────────────────────────────────────────────────
 
 
-def test_credential_prompt_is_held_while_quiet(tmp_path, monkeypatch):
+def test_credential_desk_start_is_held_while_quiet(tmp_path, monkeypatch):
     from awask import secure_prompt
 
     store = _store(tmp_path)
@@ -172,18 +172,14 @@ def test_credential_prompt_is_held_while_quiet(tmp_path, monkeypatch):
                                      credential_format="api_key",
                                      credential_description="the deploy lane needs it"))
     monkeypatch.setenv("AITHER_QUIET", "1")
-    # launch_gui_prompt refuses FIRST under pytest (a pytest run once spawned
-    # six of these windows on the owner's desktop, 2026-09-19). Clear the
-    # markers so THIS test exercises the quiet refusal deliberately — it stays
-    # deterministic because AITHER_QUIET is set right above.
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
-    monkeypatch.delenv("AITHER_NO_GUI_PROMPT", raising=False)
+    started: list[str] = []
 
-    launched, why = secure_prompt.launch_gui_prompt(card)
+    shown = secure_prompt.open_credential_surface(
+        card, start=lambda: (started.append(card.id) or (True, "started")))
 
-    assert launched is False
-    assert why.startswith("held while quiet: ")
-    assert f"answer with awask answer {card.id}" in why
+    assert started == [], "a game in front: the desk is not started over it"
+    assert shown.surface in ("remote", "none")
+    assert "not started while quiet" in shown.detail
     assert store.get(card.id).status == STATUS_OPEN
 
 
