@@ -28,7 +28,7 @@ An ask is NEW for :data:`FRESH_SECONDS`; after that it is counted, never
 headlined, so a red beam means "now" again instead of being red every day
 forever.
 
-Client mirror: ``.PRODUCTS/.AITHERSHELL/cli/src/beam.ts`` (the awsh top bar).
+Client mirror: ``src/beam.ts`` in the awsh CLI (the top bar).
 The two must change together; ``tests/fixtures/beam_cases.json`` pins the rules
 both are expected to implement.
 
