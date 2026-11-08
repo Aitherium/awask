@@ -148,6 +148,19 @@ RANK_FIRST_KINDS = ("credential", "blocked")
 
 URGENCY_RANK = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
+#: Owner ruling, 2026-11-07: a card nobody can act on any more must stop
+#: occupying the queue. An open card whose RAISER session is provably dead and
+#: which has no live waiter is retired as ``expired`` after this many hours, with
+#: its declared default applied and the reason recorded. Never a silent delete.
+#: Override: ``AITHER_DECISIONS_RETIRE_HOURS``.
+RETIRE_AFTER_SECONDS = 24 * 3600
+
+#: Kinds that must NEVER auto-retire, however stale or quiet. A credential ask, a
+#: blocked session and a security blocker are things the owner still has to see;
+#: the whole point of the tier is that it does not go away on its own.
+RETIRE_SKIP_KINDS = frozenset({"credential", "blocked", "blocker"})
+
+
 
 def _env_seconds(name: str, default: float, unit: float) -> float:
     raw = os.getenv(name, "").strip()
@@ -164,6 +177,11 @@ def info_ttl_seconds() -> float:
 
 def stale_after_seconds() -> float:
     return _env_seconds("AITHER_DECISIONS_STALE_DAYS", STALE_AFTER_SECONDS, 86400)
+
+
+def retire_after_seconds() -> float:
+    """How long a dead-session card may sit open before the store retires it."""
+    return _env_seconds("AITHER_DECISIONS_RETIRE_HOURS", RETIRE_AFTER_SECONDS, 3600)
 
 
 def is_straggler(card: "DecisionCard", now: Optional[float] = None) -> bool:
@@ -821,6 +839,14 @@ class DecisionCard:
     source: DecisionSource = field(default_factory=DecisionSource)
     created_at: float = field(default_factory=time.time)
     deadline: Optional[float] = None
+    # Promise cards (``kind="promise"``, ``awask promise``): who owes it, to whom,
+    # and what must hold for it to count as kept. ``cmd_promise`` has always
+    # passed these; the dataclass had lost the fields, so the command raised
+    # TypeError before it could record anything -- invisible to the promise
+    # sweep, which only reads cards that already reached disk.
+    owed_by: str = ""
+    owed_to: str = ""
+    preconditions: list[str] = field(default_factory=list)
     status: str = STATUS_OPEN
     answer: Optional[str] = None
     answer_note: Optional[str] = None
@@ -877,6 +903,13 @@ class DecisionCard:
     #: identifies the question, not the object. "" = not attached to anything;
     #: anything off-grammar is normalised to "" by :func:`normalize_subject`.
     subject: str = ""
+    #: Why the store closed this card without the owner answering it. Only ever
+    #: set on an auto-retirement (``answered_via="session-gone"``), and only when
+    #: the reason is POSITIVE -- the raiser's process is gone and no waiter is
+    #: left. A card the owner answered never carries one. It is the audit trail
+    #: for the case that otherwise looks silent: "nobody answered this, and it
+    #: closed".
+    retire_reason: Optional[str] = None
 
     # ── derived helpers ────────────────────────────────────────────────────────
 
@@ -967,6 +1000,10 @@ class DecisionCard:
             source=DecisionSource.from_dict(raw.get("source") or {}),
             created_at=float(raw.get("created_at") or 0.0),
             deadline=(float(raw["deadline"]) if raw.get("deadline") is not None else None),
+            owed_by=str(raw.get("owed_by") or ""),
+            owed_to=str(raw.get("owed_to") or ""),
+            preconditions=[str(p) for p in (raw.get("preconditions") or [])
+                           if isinstance(p, (str, int, float))],
             status=str(raw.get("status") or STATUS_OPEN),
             answer=raw.get("answer"),
             answer_note=raw.get("answer_note"),
@@ -995,6 +1032,9 @@ class DecisionCard:
             waiters=[DecisionSource.from_dict(w) for w in (raw.get("waiters") or [])
                      if isinstance(w, dict)],
             subject=normalize_subject(raw.get("subject")),
+            retire_reason=(
+                str(raw["retire_reason"]) if raw.get("retire_reason") else None
+            ),
         )
 
 
@@ -1623,17 +1663,125 @@ class DecisionStore:
                 continue  # busy or already gone; the next sweep retries
         return removed
 
+    def _retire_reason_if_gone(self, card: DecisionCard,
+                               now: float) -> Optional[str]:
+        """The audit reason when ``card`` may auto-retire at ``now``, else None.
+
+        POSITIVE proof only: the raising session's process must be gone AND no
+        waiter may still be alive. An unmeasurable session is never "gone", so a
+        card whose liveness cannot be read keeps sitting in the queue -- hiding a
+        real ask is far worse than carrying a dead one for another hour. The
+        protected kinds (credential, blocked, blocker) never auto-retire at all:
+        they are exactly the asks that must not disappear on their own.
+        """
+        if card.kind in RETIRE_SKIP_KINDS:
+            return None
+        threshold = retire_after_seconds()
+        if now < float(card.created_at or 0.0) + threshold:
+            return None
+        try:
+            from awask import liveness
+        except ImportError:
+            return None
+        if not liveness.raiser_gone(card):
+            return None
+        for waiter in card.waiters or ():
+            if liveness.waiter_alive(waiter):
+                return None
+        session_id = str(getattr(card.source, "session_id", "") or "").strip()
+        who = f"session {session_id}" if session_id else "the raising session"
+        return (f"{who} is gone and no waiter was left after "
+                f"{threshold / 3600:g}h; the declared default applied")
+
+    def _retire(self, card: DecisionCard, reason: str, now: float) -> bool:
+        """Close ``card`` as expired on a dead session. Returns True when it did."""
+        with self._lock:
+            fresh = self.get(card.id)
+            if fresh is None or not fresh.is_open:
+                return False
+            fresh.status = STATUS_EXPIRED
+            fresh.answer = fresh.default_key or None
+            fresh.answered_at = now
+            fresh.answered_via = "session-gone"
+            fresh.answer_note = ("no live session was left to read the answer; "
+                                 "the declared default applied")
+            fresh.retire_reason = reason
+            self._write(fresh)
+            card.status = fresh.status
+            card.answer = fresh.answer
+            card.answered_at = fresh.answered_at
+            card.answered_via = fresh.answered_via
+            card.answer_note = fresh.answer_note
+            card.retire_reason = fresh.retire_reason
+        self._apply_card_recipe(card)
+        self._sync_relay(card)
+        return True
+
+    def retire_stale(self, now: Optional[float] = None,
+                     max_age_h: Optional[float] = None,
+                     *, dry_run: bool = False) -> list[DecisionCard]:
+        """Retire open cards that no session can act on any more.
+
+        The queue accumulates asks raised by sessions that then died: the card
+        stays "open" forever because nothing will ever answer it, and it pins
+        itself above every live ask. This closes exactly those -- an open card,
+        older than ``max_age_h``, whose raising session is PROVABLY gone and
+        which has no live waiter -- as ``expired`` with its declared default
+        applied, ``answered_via="session-gone"`` and the reason on the card.
+        Credential, blocked and blocker cards are never eligible.
+
+        ``dry_run`` returns the cards it WOULD retire and writes nothing.
+
+        ``max_age_h`` defaults to the SAME threshold the eligibility test uses
+        (:func:`retire_after_seconds`), never a second hardcoded 24h: otherwise
+        lowering the threshold changed nothing, because the scan window still
+        refused to look at anything younger.
+        """
+        t = time.time() if now is None else float(now)
+        if max_age_h is None:
+            max_age_h = retire_after_seconds() / 3600.0
+        cutoff = t - max(0.0, float(max_age_h)) * 3600
+        out: list[DecisionCard] = []
+        for target, st in self._scan():
+            card = self._read_file(target, st)
+            if card is None or not card.is_open:
+                continue
+            if float(card.created_at or 0.0) > cutoff:
+                continue
+            reason = self._retire_reason_if_gone(card, t)
+            if reason is None:
+                continue
+            if dry_run:
+                card.retire_reason = reason
+                out.append(card)
+                continue
+            if self._retire(card, reason, t):
+                out.append(card)
+        return out
+
     def _expire_if_due(self, card: DecisionCard) -> bool:
         """Flip an overdue open card to expired, applying its default. Returns True
         if this call performed the transition."""
         if not card.is_open:
             return False
+        now = time.time()
         due = card.deadline
         info_ttl = due is None and card.kind == "info"
+        retirement = False
+        retire_reason: Optional[str] = None
         if info_ttl:
             # Context, not a question: closes on its own (INFO_TTL_SECONDS).
             due = card.created_at + info_ttl_seconds()
-        if due is None or time.time() < due:
+        elif due is None:
+            # No deadline, so nothing would ever close it. Retire it when nobody
+            # is left who could answer -- same rule, same skip list, same audit
+            # trail as the hourly `retire_stale` pass, so the queue looks the
+            # same whether or not the sweep has run.
+            retire_reason = self._retire_reason_if_gone(card, now)
+            if retire_reason is not None:
+                due = card.created_at + retire_after_seconds()
+                retirement = True
+        if due is None or now < due:
             return False
         with self._lock:
             fresh = self.get(card.id)
@@ -1646,6 +1794,11 @@ class DecisionStore:
                 fresh.answered_via = "info-ttl"
                 fresh.answer_note = ("context card closed on its own after "
                                      f"{info_ttl_seconds() / 3600:g}h; it was never a question")
+            elif retirement:
+                fresh.answered_via = "session-gone"
+                fresh.answer_note = ("no live session was left to read the answer; "
+                                     "the declared default applied")
+                fresh.retire_reason = retire_reason
             else:
                 fresh.answered_via = "deadline"
                 fresh.answer_note = "no answer before the deadline; the declared default applied"
@@ -1655,6 +1808,7 @@ class DecisionStore:
             card.answered_at = fresh.answered_at
             card.answered_via = fresh.answered_via
             card.answer_note = fresh.answer_note
+            card.retire_reason = fresh.retire_reason
         # Outside the lock and outside the `if`: an expiry IS an answer (the
         # declared default), so it goes through the same action hook every other
         # answer path does. The default's action is None by construction, so this

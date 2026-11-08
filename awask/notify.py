@@ -32,14 +32,11 @@ and their clicks led nowhere — the launch URL had no registered handler
 badge, the desk deck and the Discord fanout are the bells. DTOAST001 asserts
 both twin copies stay free of Windows toast code.
 
-And since 2026-10-05 the WINDOW itself yields to the desk. Owner, on the two
-parallel dialogues: the awask notifications and decisions "need to actually
-come up in awdesk ... not a separate thing". awdesk is always on screen and
-watches the card store directly, so while its liveness heartbeat is fresh
-(:func:`desk_alive`) a raise delivers to the DESK and does NOT spawn the
-standalone Tk window beside it — one ask, one surface. When the heartbeat is
-missing or stale (the desk is not running, or died without cleaning up) the
-Tk window is back on the very next raise.
+The 2026-10-05 rule that the WINDOW yields to the desk is REVERSED (owner,
+2026-11-07): the desk files a card in its inbox and badge, which is not in front
+of him, so a live desk no longer suppresses the card window -- the raise always
+delivers to the desk AND spawns the window. The old behaviour is one file away,
+not one code change: ``~/.aither/decisions/.desk-only`` restores it.
 """
 
 from __future__ import annotations
@@ -387,6 +384,20 @@ class DeskLauncher:
     how: str
 
 
+
+def desk_only() -> bool:
+    """True when ``~/.aither/decisions/.desk-only`` exists: a live desk is the ONLY
+    surface and the card window is not spawned beside it (the pre-2026-11-07 rule).
+
+    It shipped first as a hand edit in the GENERATED ``awask`` copy -- a file whose own
+    header says "regenerate instead, or the next run pays you back by reverting it" -- so
+    the rule lives here now, where the generator reads it from.
+    """
+    try:
+        return (Path.home() / ".aither" / "decisions" / ".desk-only").is_file()
+    except OSError:
+        return False
+
 def _split_command(cmd: str, *, windows: bool) -> list[str]:
     import shlex
 
@@ -667,20 +678,23 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
     # The card WINDOW is the primary channel. It is the only one that shows the
     # facts and the options, and the only one where clicking answers anything.
     #
-    # UNLESS the desk is up. awdesk is the always-on surface and watches this
-    # store directory itself, so while its heartbeat is fresh the card is
-    # ALREADY in front of the owner — the desk Inbox, the tray badge and the
-    # spoken line. Spawning the standalone Tk window beside it is the "separate
-    # dialogue" the owner vetoed (2026-10-05): one ask, one surface. The desk
-    # branch runs FIRST, before popup_enabled(): quiet holds the Tk window, but
-    # it must not turn a desk delivery into a lie about what happened.
+    # Owner, 2026-11-07, overriding the 2026-10-05 "one surface" rule: decision
+    # cards must be IN FRONT of him while he uses the desktop. The desk files a
+    # card in its inbox and badge, which is not in front (measured: desk alive,
+    # card in the store, nothing on screen). So a live desk no longer suppresses
+    # the window; the ``.desk-only`` kill-file restores the old behaviour without
+    # a code change. The desk branch still runs FIRST so its delivery is recorded
+    # and popup_enabled()/quiet cannot turn it into a lie about what happened.
     #
     # Inside the quiet window we do NOT spawn a second one: a window already open
     # walks the queue itself when it is answered, so a burst of eight cards
     # produces one window showing eight in turn, not eight stacked windows
     # fighting for the same corner of the screen.
-    if desk_alive():
+    desk_up = desk_alive()
+    if desk_up:
         delivered.append("awdesk")
+    if desk_up and desk_only():
+        skipped.append("card window (desk-only: ~/.aither/decisions/.desk-only)")
     elif not popup_enabled():
         held = quiet_reason()
         skipped.append(f"card window (held while quiet: {held})" if held
