@@ -557,7 +557,13 @@ class CardWindow:
 
         # Drag by the header: there is no OS frame to grab. The position is
         # remembered at the END of a drag, never on every motion event.
-        for widget in (bar, self.stripe):
+        #
+        # The title and count labels fill almost the whole bar (the title is
+        # sticky ew with weight 1), so a click on the header lands on a LABEL,
+        # not the bar -- binding the bar alone left the window impossible to
+        # move (owner, 2026-11-08: "I can't even move them"). The control labels
+        # keep their own click; only the passive text drags.
+        for widget in (bar, self.stripe, self._title, self._count):
             widget.bind("<Button-1>", self._drag_start)
             widget.bind("<B1-Motion>", self._drag_move)
             widget.bind("<ButtonRelease-1>", self._drag_end)

@@ -37,6 +37,14 @@ The 2026-10-05 rule that the WINDOW yields to the desk is REVERSED (owner,
 of him, so a live desk no longer suppresses the card window -- the raise always
 delivers to the desk AND spawns the window. The old behaviour is one file away,
 not one code change: ``~/.aither/decisions/.desk-only`` restores it.
+
+The in-front surface is now the desk FAIRY when it claims attention (owner,
+2026-11-08: "cards keep popping up and I can't even move them; these need to
+live in the fairy"). While the desk's fresh heartbeat carries
+``"attention": "fairy"`` (:func:`desk_attention_claim`) the fairy is on screen
+running its nudge and escalation engine, so the card IS in front of him and the
+Tk window is not spawned beside it. No claim, a stale heartbeat or an unreadable
+one all fall back to the window.
 """
 
 from __future__ import annotations
@@ -69,6 +77,15 @@ DESK_ALIVE_FILENAME = ".desk-alive"
 #: this is more than four missed beats; the file must read as dead well before a
 #: raise is lost, because the cost of guessing wrong is a card nobody sees.
 DESK_ALIVE_STALE_SECONDS = 90.0
+
+#: The heartbeat key the desk sets while one of its surfaces owns the owner's
+#: attention, and the one value that surface may claim. Absent = no claim.
+DESK_ATTENTION_KEY = "attention"
+DESK_ATTENTION_FAIRY = "fairy"
+
+#: The heartbeat is ``{"pid":…,"at":…}`` plus at most a claim; anything far larger
+#: is not a heartbeat, and is not worth reading on the raise path.
+_DESK_ALIVE_MAX_BYTES = 64 * 1024
 
 #: The port the desk bridge falls back to when nobody persisted a pick.
 DESK_BRIDGE_DEFAULT_PORT = 47931
@@ -320,7 +337,9 @@ def desk_alive(store_dir: Optional[Path] = None) -> bool:
     awdesk's ``decision-cards.cjs``); the file's mtime is the
     liveness signal, and its CONTENT (``{"pid":…,"at":…}``) is informational —
     a killed app leaves the file behind, so existence alone proves nothing and a
-    heartbeat older than :data:`DESK_ALIVE_STALE_SECONDS` reads as dead.
+    heartbeat older than :data:`DESK_ALIVE_STALE_SECONDS` reads as dead. The one
+    content field that steers a raise is the attention claim, read by
+    :func:`desk_attention_claim` under this same staleness rule.
 
     Why this exists, in the owner's words (2026-10-05): the awask notifications
     and decisions "need to actually come up in awdesk … not a separate thing".
@@ -348,6 +367,49 @@ def desk_alive(store_dir: Optional[Path] = None) -> bool:
     # No lower bound on `age`: a heartbeat with an mtime slightly in the future
     # (same-machine clock jitter) is a desk that JUST wrote it, not a dead one.
     return age < DESK_ALIVE_STALE_SECONDS
+
+
+def desk_attention_claim(store_dir: Optional[Path] = None) -> str:
+    """The surface the desk says owns the owner's attention right now, or ``""``.
+
+    awdesk adds ``"attention": "fairy"`` to its ``.desk-alive`` heartbeat ONLY while
+    the fairy is visible and running its nudge/escalation engine; the key is absent
+    otherwise. While that claim is live, a raised card is already in front of the
+    owner (owner, 2026-11-08: these cards "need to live in the fairy"), so
+    :func:`notify` does not spawn the Tk window beside it.
+
+    The claim is only as good as the heartbeat that carries it, so it is judged by
+    the SAME staleness rule as :func:`desk_alive`: a desk that died with the fairy
+    up leaves the claim in a file nobody is refreshing. Every failure falls toward
+    the window — a stale, absent, unreadable, oversized, non-JSON or non-object
+    heartbeat, or a non-string value, all return ``""``.
+
+    Args:
+        store_dir: the card store directory; defaults to :func:`decisions_dir`.
+
+    Returns:
+        The claimed surface name (e.g. ``"fairy"``), stripped, or ``""`` for no
+        live claim. Never raises.
+    """
+    try:
+        beat = (Path(store_dir) if store_dir is not None else decisions_dir())
+        path = beat / DESK_ALIVE_FILENAME
+        if time.time() - path.stat().st_mtime >= DESK_ALIVE_STALE_SECONDS:
+            return ""
+        with path.open("rb") as handle:
+            raw = handle.read(_DESK_ALIVE_MAX_BYTES + 1)
+    except OSError:
+        return ""
+    if len(raw) > _DESK_ALIVE_MAX_BYTES:
+        return ""
+    try:
+        payload = json.loads(raw.decode("utf-8-sig"))
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    claim = payload.get(DESK_ATTENTION_KEY)
+    return claim.strip() if isinstance(claim, str) else ""
 
 
 # ── starting the desk: where a credential ask goes when the desk is down ───────
@@ -686,15 +748,27 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
     # a code change. The desk branch still runs FIRST so its delivery is recorded
     # and popup_enabled()/quiet cannot turn it into a lie about what happened.
     #
+    # Owner, 2026-11-08: the in-front surface is now the desk FAIRY when it
+    # claims attention ("these need to live in the fairy"; the Tk window could not
+    # even be moved). While the fresh heartbeat says ``"attention": "fairy"`` the
+    # fairy carries the card -- nudges, then escalation -- and the window is not
+    # spawned. Only a live claim suppresses it: a stale, absent or unreadable
+    # claim falls TOWARD the window, which is the 2026-11-07 behaviour.
+    #
     # Inside the quiet window we do NOT spawn a second one: a window already open
     # walks the queue itself when it is answered, so a burst of eight cards
     # produces one window showing eight in turn, not eight stacked windows
     # fighting for the same corner of the screen.
     desk_up = desk_alive()
+    fairy = desk_up and desk_attention_claim() == DESK_ATTENTION_FAIRY
     if desk_up:
         delivered.append("awdesk")
+    if fairy:
+        delivered.append("awdesk fairy")
     if desk_up and desk_only():
         skipped.append("card window (desk-only: ~/.aither/decisions/.desk-only)")
+    elif fairy:
+        skipped.append("card window (the desk fairy carries it: nudges and escalation)")
     elif not popup_enabled():
         held = quiet_reason()
         skipped.append(f"card window (held while quiet: {held})" if held
