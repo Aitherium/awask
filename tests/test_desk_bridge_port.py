@@ -35,18 +35,18 @@ def appdata(tmp_path, monkeypatch):
 def test_url_is_built_from_the_persisted_port(appdata):
     assert str(appdata) in str(notify.desk_bridge_port_file())
     assert notify.desk_bridge_port() == PERSISTED_PORT
-    assert notify.desk_bridge_url() == f"http://127.0.0.1:{PERSISTED_PORT}"
+    assert notify.desk_bridge_url(probe=False) == f"http://127.0.0.1:{PERSISTED_PORT}"
 
 
 def test_explicit_env_url_still_wins(appdata, monkeypatch):
     monkeypatch.setenv("AWDESK_URL", "http://127.0.0.1:5005/")
-    assert notify.desk_bridge_url() == "http://127.0.0.1:5005"
+    assert notify.desk_bridge_url(probe=False) == "http://127.0.0.1:5005"
 
 
 def test_an_unusable_file_falls_back_to_the_constant(appdata):
     (appdata / "Desk" / "bridge-port.txt").write_text("not-a-port", encoding="ascii")
     assert notify.desk_bridge_port() == notify.DESK_BRIDGE_DEFAULT_PORT
-    assert notify.desk_bridge_url() == "http://127.0.0.1:47931"
+    assert notify.desk_bridge_url(probe=False) == "http://127.0.0.1:47931"
 
 
 class _Response:
@@ -72,6 +72,9 @@ def test_raise_posts_to_the_persisted_port(appdata, monkeypatch):
         seen.append(request)
         return _Response()
 
+    notify._bridge_url_cache = None
+    monkeypatch.setattr(notify, "_bridge_answers",
+                        lambda url, timeout=0.3: url.endswith(f":{PERSISTED_PORT}"))
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
 
     assert notify.raise_desk_inbox(card_id="d-4krg") is None
@@ -83,4 +86,34 @@ def test_raise_posts_to_the_persisted_port(appdata, monkeypatch):
 def test_awsh_events_url_is_stripped_to_the_base(appdata, monkeypatch):
     """AITHERSHELL_AWDESK_URL is awsh's EVENTS url; this client needs the base."""
     monkeypatch.setenv("AITHERSHELL_AWDESK_URL", "http://127.0.0.1:49031/events")
-    assert notify.desk_bridge_url() == "http://127.0.0.1:49031"
+    assert notify.desk_bridge_url(probe=False) == "http://127.0.0.1:49031"
+
+
+def _only(*alive_ports):
+    """A /health answer only for these ports."""
+    def answers(url, timeout=0.3):
+        return any(url == f"http://127.0.0.1:{p}" for p in alive_ports)
+    return answers
+
+
+def test_liveness_beats_a_stale_file(appdata, monkeypatch):
+    """Measured 2026-11-07 10:45 PT: the file said 49031, the desk answered on 47931.
+
+    A desk relaunched without the Startup launcher never rewrites the file, so the
+    file alone is a RECORD. The first candidate that answers /health wins.
+    """
+    notify._bridge_url_cache = None
+    monkeypatch.setattr(notify, "_bridge_answers", _only(notify.DESK_BRIDGE_DEFAULT_PORT))
+    assert notify.desk_bridge_url() == f"http://127.0.0.1:{notify.DESK_BRIDGE_DEFAULT_PORT}"
+
+
+def test_the_file_port_wins_when_it_is_the_one_answering(appdata, monkeypatch):
+    notify._bridge_url_cache = None
+    monkeypatch.setattr(notify, "_bridge_answers", _only(PERSISTED_PORT))
+    assert notify.desk_bridge_url() == f"http://127.0.0.1:{PERSISTED_PORT}"
+
+
+def test_nothing_answering_still_answers_the_file_port(appdata, monkeypatch):
+    notify._bridge_url_cache = None
+    monkeypatch.setattr(notify, "_bridge_answers", lambda url, timeout=0.3: False)
+    assert notify.desk_bridge_url() == f"http://127.0.0.1:{PERSISTED_PORT}"

@@ -108,15 +108,56 @@ def desk_bridge_port(default: int = DESK_BRIDGE_DEFAULT_PORT) -> int:
         return default
 
 
-def desk_bridge_url(host: str = "127.0.0.1",
-                    default: int = DESK_BRIDGE_DEFAULT_PORT) -> str:
-    """Where the live desk bridge answers: an explicit env URL, else the persisted port."""
+def _bridge_answers(url: str, timeout: float = 0.3) -> bool:
+    """Does a bridge answer ``GET /health`` right now? A closed desk is normal."""
+    import urllib.request  # noqa: PLC0415 - only this resolver needs the network
+
+    try:
+        with urllib.request.urlopen(url + "/health", timeout=timeout) as resp:  # noqa: S310
+            return 200 <= int(getattr(resp, "status", 200) or 0) < 300
+    except Exception:  # noqa: BLE001 - refused, timeout and malformed all mean "no"
+        return False
+
+
+_bridge_url_cache: "tuple[float, str] | None" = None
+
+
+def _env_desk_bridge_url() -> str:
+    """``AWDESK_URL``; awsh hands ``AITHERSHELL_AWDESK_URL`` over as the EVENTS url."""
     explicit = (os.getenv("AWDESK_URL") or os.getenv("AITHERSHELL_AWDESK_URL") or "").strip()
+    return explicit.rstrip("/").removesuffix("/events")
+
+
+def desk_bridge_url(host: str = "127.0.0.1",
+                    default: int = DESK_BRIDGE_DEFAULT_PORT,
+                    *, probe: bool = True) -> str:
+    """Where the live desk bridge answers, chosen by LIVENESS.
+
+    Candidates in order: the env URL, the port awdesk's launcher persisted, the
+    constant -- the first that answers ``GET /health`` within 300 ms. The FILE is a
+    record, not proof: measured 2026-11-07 10:45 PT the running desk (relaunched
+    without the Startup launcher) listened on 47931 while the file still said 49031,
+    so reading the file alone fails in the opposite direction. Nothing answering
+    means the desk is closed, which is normal; the file's port is then the answer.
+    """
+    global _bridge_url_cache
+    persisted = f"http://{host}:{desk_bridge_port(default)}"
+    if not probe:
+        return _env_desk_bridge_url() or persisted
+    now = time.monotonic()
+    if _bridge_url_cache is not None and now - _bridge_url_cache[0] < 30.0:
+        return _bridge_url_cache[1]
+    candidates: list[str] = []
+    explicit = _env_desk_bridge_url()
     if explicit:
-        # awsh hands AITHERSHELL_AWDESK_URL over as the EVENT stream (".../events");
-        # this client wants the base, so calling "/events/fleet/status" is avoided.
-        return explicit.rstrip("/").removesuffix("/events")
-    return f"http://{host}:{desk_bridge_port(default)}"
+        candidates.append(explicit)
+    for port in (desk_bridge_port(default), default):
+        url = f"http://{host}:{port}"
+        if url not in candidates:
+            candidates.append(url)
+    chosen = next((url for url in candidates if _bridge_answers(url)), persisted)
+    _bridge_url_cache = (now, chosen)
+    return chosen
 
 
 @dataclass
