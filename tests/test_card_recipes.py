@@ -560,3 +560,16 @@ class TestAMissingRecipeLayerIsNotSilent:
         second = store.create(build_card("wake-failed", VARS))
         assert len(list((tmp_path / "cards").glob("d-*.json"))) == 1
         assert second.id
+
+
+def test_vault_url_comes_from_env_then_host_then_a_local_default(monkeypatch):
+    from types import SimpleNamespace
+
+    from awask import recipes
+
+    monkeypatch.delenv("AWASK_VAULT_URL", raising=False)
+    assert recipes._vault_url(None) == recipes.DEFAULT_VAULT_URL
+    host = SimpleNamespace(VAULT_URL="https://vault.example.invalid:8111/")
+    assert recipes._vault_url(host) == "https://vault.example.invalid:8111"
+    monkeypatch.setenv("AWASK_VAULT_URL", "https://env.example.invalid/")
+    assert recipes._vault_url(host) == "https://env.example.invalid"
