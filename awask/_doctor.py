@@ -43,7 +43,10 @@ PAIRS_WITH = ['awdiscord', 'adk', 'awmail', 'awnest', 'awrelay', 'awrise']
 #: platform-wide vars it also touches would be noise, and a doctor that floods
 #: gets ignored.
 ENV_REQUIRED = []
-ENV_OPTIONAL = ['AWASK_GROUPING', 'AWASK_NOTIFY_COOLDOWN', 'AWASK_NOTIFY_WAIT_TTL', 'AWASK_STOP_WAIT']
+ENV_OPTIONAL = [
+    'AWASK_ASK_TTL', 'AWASK_GROUPING', 'AWASK_NOTIFY_COOLDOWN', 'AWASK_NOTIFY_WAIT_TTL',
+    'AWASK_STOP_WAIT',
+]
 
 
 def _installed(mod: str) -> "str | None":

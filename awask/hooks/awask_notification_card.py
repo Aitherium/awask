@@ -25,6 +25,14 @@ new phone DM. Now:
   when the owner types in that session (``--resolve``, UserPromptSubmit);
 - the card's first line says what it needs, in one line.
 
+**An AskUserQuestion ask mirrors the terminal.** Measured 2026-11-08: the card for
+a three-tab AskUserQuestion said only "Claude needs your permission" with generic
+buttons, because Claude Code had not yet flushed the asking turn to the transcript
+when Notification fired (the tool_use record landed ~9 s AFTER the card). The
+PreToolUse hook ``awask_ask_stash.py`` now stashes the ask's ``tool_input`` under the
+state dir; this hook reads it and offers the question's own options as ``tui:<n>``
+(the terminal's numbering), so a surface that can type into the session answers it.
+
 Installed by ``awask install-hooks``. Standard library only; never breaks a turn.
 """
 
@@ -144,6 +152,92 @@ def clear_wait(session_id: str) -> None:
         sys.stderr.write("[warn] awask_notification_card: wait not cleared: %s\n" % exc)
 
 
+#: The tool whose ask a card can mirror option for option.
+ASK_TOOL = "AskUserQuestion"
+#: A stashed ask older than this is forgotten (the session moved on or died).
+ASK_TTL_SECONDS = float(os.getenv("AWASK_ASK_TTL", "1800"))
+
+
+def _ask_marker(session_id: str) -> Path:
+    return state_dir() / ("%s.ask.json" % _safe_sid(session_id))
+
+
+def clean_questions(raw) -> list:
+    """AskUserQuestion's ``questions`` normalised to
+    ``[{question, header, multiSelect, options: [{label, description}]}]``.
+    Anything off-shape is dropped, never guessed at."""
+    out: list = []
+    for q in raw if isinstance(raw, list) else []:
+        if not isinstance(q, dict) or not str(q.get("question") or "").strip():
+            continue
+        opts = []
+        for o in q.get("options") or []:
+            if isinstance(o, dict) and str(o.get("label") or "").strip():
+                opts.append({"label": str(o["label"]).strip(),
+                             "description": str(o.get("description") or "").strip()})
+            elif isinstance(o, str) and o.strip():
+                opts.append({"label": o.strip(), "description": ""})
+        out.append({"question": str(q["question"]).strip(),
+                    "header": str(q.get("header") or "").strip(),
+                    "multiSelect": bool(q.get("multiSelect")),
+                    "options": opts})
+    return out
+
+
+def stash_ask(payload: dict) -> bool:
+    """PreToolUse(AskUserQuestion): keep the ask where the Notification hook can read
+    it. True when stashed. Local only; every quoted string is redacted when a card
+    is built from it, not here."""
+    if str(payload.get("tool_name") or "") != ASK_TOOL:
+        return False
+    session_id = str(payload.get("session_id") or "").strip()
+    args = payload.get("tool_input") or {}
+    questions = clean_questions(args.get("questions") if isinstance(args, dict) else None)
+    if not session_id or not questions:
+        return False
+    marker = _ask_marker(session_id)
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(json.dumps({"ts": time.time(),
+                                      "tool_use_id": str(payload.get("tool_use_id") or ""),
+                                      "questions": questions}), encoding="utf-8")
+        return True
+    except OSError as exc:
+        sys.stderr.write("[warn] awask_notification_card: ask not stashed: %s\n" % exc)
+        return False
+
+
+def clear_ask(session_id: str) -> None:
+    try:
+        _ask_marker(session_id).unlink(missing_ok=True)
+    except OSError as exc:  # a stale stash is TTL-bounded and id-checked
+        sys.stderr.write("[warn] awask_notification_card: ask not cleared: %s\n" % exc)
+
+
+def pending_ask(session_id: str, ctx: Optional[dict] = None) -> Optional[dict]:
+    """The AskUserQuestion this session is blocked on, ``{"id", "questions"}``, or None.
+
+    The stash wins (the transcript lags the screen); it is ignored once stale or once
+    the transcript holds the tool_result answering it. Else the transcript's own last
+    tool_use, when it is an unanswered ask."""
+    ctx = ctx or {}
+    answered = set(ctx.get("answered_ids") or ())
+    marker = _ask_marker(session_id)
+    try:
+        if marker.is_file() and (time.time() - marker.stat().st_mtime) < ASK_TTL_SECONDS:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+            data = data if isinstance(data, dict) else {}
+            tid = str(data.get("tool_use_id") or "")
+            questions = clean_questions(data.get("questions"))
+            if questions and not (tid and tid in answered):
+                return {"id": tid, "questions": questions}
+    except (OSError, ValueError) as exc:
+        sys.stderr.write("[warn] awask_notification_card: ask stash unreadable: %s\n" % exc)
+    if ctx.get("pending_ask"):
+        return {"id": str(ctx.get("pending_ask_id") or ""), "questions": ctx["pending_ask"]}
+    return None
+
+
 #: Claude Code notification types that block the session until a human acts.
 BLOCKING_TYPES = {"permission_prompt", "elicitation_dialog"}
 #: Types that MAY be a wait -- only when the transcript shows an ask (see owner_need).
@@ -220,6 +314,7 @@ def transcript_context(path: str) -> dict:
     except (OSError, ValueError, TypeError):
         return ctx
     launched = done = 0
+    answered: list = []
     for line in raw.splitlines():
         try:
             rec = json.loads(line)
@@ -242,6 +337,12 @@ def transcript_context(path: str) -> dict:
                     ctx["asked"] = typed[-1]
                     launched = done = 0  # a new owner turn: count from here
                 done += sum(t.count("<task-notification>") for t in texts)
+                for b in content if isinstance(content, list) else []:
+                    if isinstance(b, dict) and b.get("type") == "tool_result" \
+                            and b.get("tool_use_id"):
+                        answered.append(str(b["tool_use_id"]))
+                        if ctx.get("pending_ask_id") == answered[-1]:
+                            ctx.pop("pending_ask", None)
             else:
                 said = [t for t in _texts(content) if t.strip()]
                 if said:
@@ -250,10 +351,21 @@ def transcript_context(path: str) -> dict:
                          and b.get("type") == "tool_use"]
                 if tools:
                     ctx["pending_tool"] = _describe_tool(tools[-1])
+                    last = tools[-1]
+                    args = last.get("input") if isinstance(last.get("input"), dict) else {}
+                    asked = (clean_questions(args.get("questions"))
+                             if last.get("name") == ASK_TOOL else [])
+                    if asked:
+                        ctx["pending_ask"] = asked
+                        ctx["pending_ask_id"] = str(last.get("id") or "")
+                    else:
+                        ctx.pop("pending_ask", None)
                 elif said:
                     ctx["pending_tool"] = ""
                 launched += sum(1 for b in tools if _is_background(b))
     ctx["bg_pending"] = max(launched - done, 0)
+    if answered:
+        ctx["answered_ids"] = answered
     return ctx
 
 
@@ -373,6 +485,55 @@ def card_title(payload: dict, ctx: Optional[dict] = None) -> str:
     return redact_secrets(title)[:200]
 
 
+def ask_card_parts(questions: list, payload: dict, ctx: Optional[dict] = None) -> dict:
+    """Title, summary, facts and options for an AskUserQuestion card.
+
+    The options ARE the first question's options, keyed ``tui:<n>`` with the 1-based
+    number the terminal shows, so a surface that types into the session can answer
+    it. A multi-select question gets no ``tui:<n>`` (one keystroke toggles, it does
+    not answer). ``tui:type`` opens the session; ``later`` changes nothing."""
+    ctx = _redacted_ctx(ctx)
+    first = questions[0]
+    question = redact_secrets(first["question"])
+    header = redact_secrets(first.get("header") or "")
+    title = ("%s: %s" % (header, question)) if header else question
+    cwd = str(payload.get("cwd") or "").strip().rstrip("/\\")
+    project = re.split(r"[/\\]", cwd)[-1] if cwd else ""
+    lines = ["Needs: %s" % _clip(question, 300)]
+    for i, q in enumerate(questions[1:], start=2):
+        labels = " / ".join(redact_secrets(o["label"]) for o in q["options"])
+        lines.append("Then (%d of %d%s): %s%s" % (
+            i, len(questions), ", " + redact_secrets(q["header"]) if q.get("header") else "",
+            _clip(redact_secrets(q["question"]), 240),
+            " [%s]" % _clip(labels, 200) if labels else ""))
+    if ctx.get("asked"):
+        lines.append("You asked: %s" % _clip(ctx["asked"], 300))
+    facts = ["Claude Code%s is waiting on this question in the terminal." % (
+        " (%s)" % project if project else "")]
+    if len(questions) > 1:
+        facts.append("Question 1 of %d; the other %d need the session (or the next card)."
+                     % (len(questions), len(questions) - 1))
+    options = []
+    if not first.get("multiSelect"):
+        for n, o in enumerate(first["options"], start=1):
+            label = redact_secrets(o["label"])
+            desc = redact_secrets(o.get("description") or "")
+            options.append({"key": "tui:%d" % n, "label": _clip(label, 80),
+                            "consequence": _clip(desc or "answers %d in the terminal" % n, 240),
+                            "recommended": "(recommended)" in label.lower()})
+    else:
+        facts.append("Multi-select: pick the answers in the session.")
+    options.append({"key": "tui:type", "label": "Type something",
+                    "consequence": "opens the session so you can type your own answer",
+                    "recommended": False})
+    options.append({"key": "later", "label": "Not now",
+                    "consequence": "the session stays blocked; nothing is lost",
+                    "recommended": False})
+    return {"title": redact_secrets(_clip(title, 200)),
+            "summary": redact_secrets("\n".join(lines))[:2000],
+            "facts": [redact_secrets(f) for f in facts], "options": options}
+
+
 def _open_cards_for(store, session_id: str) -> list:
     if not session_id:
         return []
@@ -380,7 +541,8 @@ def _open_cards_for(store, session_id: str) -> list:
             if (c.dedupe_key or "").startswith(KEY_PREFIX + session_id + ":")]
 
 
-def raise_card(payload: dict, session_id: str, message: str, need: str = "") -> bool:
+def raise_card(payload: dict, session_id: str, message: str, need: str = "",
+               ask: Optional[dict] = None) -> bool:
     try:
         from awask.store import DecisionCard, DecisionOption, DecisionSource, get_store
     except Exception:
@@ -388,13 +550,33 @@ def raise_card(payload: dict, session_id: str, message: str, need: str = "") -> 
     try:
         store = get_store()
         kind = str(payload.get("notification_type") or "")
-        key = (wait_key(session_id) if kind not in BLOCKING_TYPES
-               else "%s%s:perm-%s" % (KEY_PREFIX, session_id, fingerprint(session_id, need)))
+        if ask:
+            # The tool_use id makes the same question asked twice two cards (the
+            # store refuses a key it has seen, whatever that card's status).
+            key = "%s%s:ask-%s" % (KEY_PREFIX, session_id,
+                                   fingerprint(session_id, need + "\x00" + ask.get("id", "")))
+        else:
+            key = (wait_key(session_id) if kind not in BLOCKING_TYPES
+                   else "%s%s:perm-%s" % (KEY_PREFIX, session_id,
+                                          fingerprint(session_id, need)))
         # One live card per session: the newest wait replaces the older one.
         for old in _open_cards_for(store, session_id):
             if old.dedupe_key != key:
                 store.cancel(old.id, note="superseded by a newer wait in the same session")
         ctx = transcript_context(str(payload.get("transcript_path") or ""))
+        source = DecisionSource(session_id=session_id, agent="claude-code",
+                                cwd=str(payload.get("cwd") or ""))
+        if ask:
+            parts = ask_card_parts(ask["questions"], payload, ctx)
+            card = DecisionCard(
+                id="", title=parts["title"], summary=parts["summary"], kind="blocked",
+                facts=parts["facts"],
+                options=[DecisionOption(**o) for o in parts["options"]],
+                default_key="later", urgency="high", dedupe_key=key, source=source)
+            if session_id:
+                card.subject = "session:%s" % session_id
+            store.create(card)
+            return True
         card = DecisionCard(
             id="",
             title=card_title(payload, ctx),
@@ -414,8 +596,7 @@ def raise_card(payload: dict, session_id: str, message: str, need: str = "") -> 
             # at urgency >= high. Only real waits get here, once per wait.
             urgency="high",
             dedupe_key=key,
-            source=DecisionSource(session_id=session_id, agent="claude-code",
-                                  cwd=str(payload.get("cwd") or "")),
+            source=source,
         )
         # The universe object this card is drawn on: the waiting session. Set as an
         # attribute (not a constructor kwarg) so an older store without the field
@@ -432,6 +613,7 @@ def raise_card(payload: dict, session_id: str, message: str, need: str = "") -> 
 def resolve(session_id: str) -> int:
     """UserPromptSubmit: the owner is back in this session, so its wait is over."""
     clear_wait(session_id)
+    clear_ask(session_id)
     if not session_id:
         return 0
     try:
@@ -454,6 +636,12 @@ def handle(payload: dict) -> bool:
         return False
     kind = str(payload.get("notification_type") or "").strip()
     ctx = transcript_context(str(payload.get("transcript_path") or ""))
+    ask = pending_ask(session_id, ctx)
+    if ask:
+        need = ask["questions"][0]["question"]
+        if recently_raised(fingerprint(session_id, "ask\x00" + ask["id"] + "\x00" + need)):
+            return False
+        return bool(raise_card(payload, session_id, message, need, ask=ask))
     blocking = kind in BLOCKING_TYPES or (not kind and "permission" in message.lower())
     if blocking:
         tool = ctx.get("pending_tool") or ""
@@ -476,6 +664,9 @@ def main() -> int:
     session_id = str(payload.get("session_id") or "").strip()
     if "--resolve" in sys.argv:
         resolve(session_id)
+        return _quiet()
+    if "--stash-ask" in sys.argv:
+        stash_ask(payload)
         return _quiet()
     handle(payload)
     return _quiet()
@@ -545,6 +736,33 @@ def self_test() -> int:
               "systemctl restart aither-relay" in summ and "You asked: deploy" in summ)
         check("title carries the session topic",
               card_title({"cwd": "C:\\X"}, ctx) == "Claude Code needs you: X -- fix the mail plane")
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["AITHER_DECISIONS_DIR"] = tmp
+        qs = [{"question": "Where is CertTracker?", "header": "CertTracker",
+               "multiSelect": False,
+               "options": [{"label": "Jason uploaded it", "description": "search uploads"},
+                           {"label": "Build it fresh", "description": "token=Zx9Qw81LmN0pRtYv"}]},
+              {"question": "Which teaser?", "header": "Teaser",
+               "options": [{"label": "Full world pack"}, {"label": "Stills"}]}]
+        check("an ask is stashed",
+              stash_ask({"tool_name": "AskUserQuestion", "session_id": "sa",
+                         "tool_use_id": "tu9", "tool_input": {"questions": qs}}))
+        check("another tool is not stashed",
+              not stash_ask({"tool_name": "Bash", "session_id": "sa", "tool_input": {}}))
+        ask = pending_ask("sa", {})
+        check("the stash is the pending ask", bool(ask) and ask["id"] == "tu9")
+        check("an answered ask is not pending",
+              pending_ask("sa", {"answered_ids": ["tu9"]}) is None)
+        parts = ask_card_parts(ask["questions"], {"cwd": "C:\\P"}, {})
+        keys = [o["key"] for o in parts["options"]]
+        check("options are the terminal's numbers",
+              keys == ["tui:1", "tui:2", "tui:type", "later"])
+        check("title is the question", parts["title"] == "CertTracker: Where is CertTracker?")
+        check("the second question is in the summary", "Which teaser?" in parts["summary"])
+        check("descriptions are redacted",
+              "Zx9Qw81LmN0pRtYv" not in json.dumps(parts["options"]))
+        clear_ask("sa")
+        check("resolve clears the stash", pending_ask("sa", {}) is None)
     check("an unreadable transcript is empty context, not a crash",
           transcript_context(os.path.join(os.devnull, "nope.jsonl")) == {})
 

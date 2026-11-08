@@ -16,6 +16,7 @@ Three files into ``<target>/hooks/``, and three entries into ``<target>/settings
   Stop              stop_steer_drain.py         a steer in the mailbox becomes the next turn
   UserPromptSubmit  awask_mailbox_drain.py      carries your answer INTO the session
   Notification      awask_notification_card.py  "the agent is waiting" becomes a card
+  PreToolUse        awask_ask_stash.py          an AskUserQuestion's options reach that card
 
 The middle one is the one people skip and the one that matters: without it you can
 answer a card and the agent never learns you did.
@@ -59,7 +60,13 @@ HOOKS = {
     # Withdraws that card when the owner types in the session again, so a phone
     # ping never outlives the wait it announced.
     "awask_notification_resolve.py": "UserPromptSubmit",
+    # Stashes an AskUserQuestion's options before its dialog shows, so the
+    # Notification card can offer them (the transcript lags the screen).
+    "awask_ask_stash.py": "PreToolUse",
 }
+
+#: hook filename -> the tool matcher its entry carries (default: every tool).
+MATCHERS = {"awask_ask_stash.py": "AskUserQuestion"}
 
 
 def hook_source_dir() -> Path:
@@ -152,7 +159,8 @@ def merge_settings(target: Path, dry_run: bool) -> tuple[list[str], list[str]]:
             notes.append("already wired: %s -> %s" % (event, name))
             continue
 
-        matchers.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
+        matchers.append({"matcher": MATCHERS.get(name, ""),
+                         "hooks": [{"type": "command", "command": command}]})
         added.append("%s -> %s" % (event, name))
 
     if added and not dry_run:

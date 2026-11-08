@@ -290,6 +290,10 @@ class CancelNoteRequiredError(DecisionError, ValueError):
     a ``ValueError`` (it is a bad argument, not a store failure)."""
 
 
+class StaleCardUIError(DecisionError):
+    """``set_ui`` lost the compare-and-set: the card's text moved since compile."""
+
+
 class CardClosedError(DecisionError):
     """A write that only an OPEN card accepts reached a closed one."""
 
@@ -910,6 +914,13 @@ class DecisionCard:
     #: for the case that otherwise looks silent: "nobody answered this, and it
     #: closed".
     retire_reason: Optional[str] = None
+    #: Generated UI: an A2UI v0.9 surface (``awask.card_ui``) a capable
+    #: surface draws instead of the plain card. PRESENTATION ONLY -- every Button
+    #: must send ``answer:<an option key>`` (validated on every write), so a ``ui``
+    #: can never ask a different question than the card. It records the
+    #: ``card_hash`` it was compiled against; a revised card's stale ``ui`` is
+    #: detectable (``card_ui.is_current``). Never served for a credential card.
+    ui: Optional[dict[str, Any]] = None
 
     # ── derived helpers ────────────────────────────────────────────────────────
 
@@ -977,6 +988,8 @@ class DecisionCard:
         if data.get("answer"):
             data["answer"] = self.CREDENTIAL_ANSWER
         data["answer_note"] = ""
+        # A credential ask is drawn by awdesk's masked field and nothing else.
+        data["ui"] = None
         data["notes"] = [
             {**note, "text": "[redacted — credential card]"}
             for note in (data.get("notes") or [])
@@ -1035,6 +1048,7 @@ class DecisionCard:
             retire_reason=(
                 str(raw["retire_reason"]) if raw.get("retire_reason") else None
             ),
+            ui=(dict(raw["ui"]) if isinstance(raw.get("ui"), dict) else None),
         )
 
 
@@ -1357,6 +1371,11 @@ class DecisionStore:
 
         # Credential-specific validation
         if card.kind == "credential":
+            if card.ui is not None:
+                raise DecisionError(
+                    'kind="credential" must not carry ui; a credential ask is drawn '
+                    'only by the masked field'
+                )
             if card.options:
                 raise DecisionError(
                     'kind="credential" must not have options; '
@@ -1416,6 +1435,12 @@ class DecisionStore:
                 "a card offering options must declare default_key — 'what happens if the owner "
                 "never answers' is the field that makes the card safe to ignore"
             )
+        if card.ui is not None:
+            from awask.card_ui import validate_bindings
+
+            problems = validate_bindings(card)
+            if problems:
+                raise DecisionError("ui does not bind to this card: " + "; ".join(problems))
 
     # ── reads ─────────────────────────────────────────────────────────────────
 
@@ -2053,6 +2078,38 @@ class DecisionStore:
             self._write(revised)
         self._sync_relay(revised)
         return revised
+
+    def set_ui(self, card_id: str, ui: Optional[dict[str, Any]],
+               expect_hash: str) -> DecisionCard:
+        """Attach (or with ``ui=None`` clear) an OPEN card's generated UI.
+
+        Compare-and-set on :func:`awask.card_ui.card_hash`: the caller
+        compiled ``ui`` against a card whose text hashed to ``expect_hash``; if the
+        card was revised since, :class:`StaleCardUIError` is raised and nothing is
+        written, so a slow generator can never pin old text onto a new question.
+        The stored ``ui`` records that hash. Bindings are validated like any write.
+        """
+        from awask.card_ui import card_hash
+
+        with self._lock:
+            card = self.get(card_id)
+            if card is None:
+                raise DecisionError(f"no such card: {card_id}")
+            if not card.is_open:
+                raise CardClosedError(f"card {card_id} is {card.status}; its ui is final")
+            if (card.kind or "").strip().lower() == "credential":
+                raise DecisionError("a credential card cannot carry ui")
+            current = card_hash(card)
+            if current != (expect_hash or ""):
+                raise StaleCardUIError(
+                    f"card {card_id} changed since the ui was compiled "
+                    f"(expected {str(expect_hash)[:12]}, now {current[:12]})")
+            updated = DecisionCard.from_dict(card.to_dict())
+            updated.ui = None if ui is None else {**dict(ui), "card_hash": current}
+            self._validate(updated)
+            self._write(updated)
+        self._sync_relay(updated)
+        return updated
 
     def _register_steer_waiter(self, card_id: str, src: DecisionSource) -> None:
         """Record a joined session in the steerback waiters file (lock held).
