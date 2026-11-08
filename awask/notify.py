@@ -73,6 +73,51 @@ DESK_ALIVE_FILENAME = ".desk-alive"
 #: raise is lost, because the cost of guessing wrong is a card nobody sees.
 DESK_ALIVE_STALE_SECONDS = 90.0
 
+#: The port the desk bridge falls back to when nobody persisted a pick.
+DESK_BRIDGE_DEFAULT_PORT = 47931
+
+#: Where awdesk's launcher persists the port it actually bound
+#: (``%APPDATA%\\Desk\\bridge-port.txt``). Hyper-V/WSL reserved TCP ranges move, so a
+#: pinned port can come up dead after a reboot; the launcher picks and persists one.
+DESK_PORT_FILE = Path("Desk") / "bridge-port.txt"
+
+
+def desk_bridge_port_file() -> Path:
+    """The port file awdesk's launcher writes on THIS machine.
+
+    Twin of ``AitherOS/lib/core/desk_bridge.py`` -- copied, not imported: this module
+    also ships inside the standalone ``awask`` package, which has no AitherOS tree.
+    """
+    appdata = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME")
+    base = Path(appdata) if appdata else Path.home() / ".config"
+    return base / DESK_PORT_FILE
+
+
+def desk_bridge_port(default: int = DESK_BRIDGE_DEFAULT_PORT) -> int:
+    """The persisted desk-bridge port, else ``default``. Never raises.
+
+    A pinned 47931 was the whole failure on 2026-11-07: the bridge was listening on
+    the picked 49031 while every raise knocked on the dead default and returned
+    "desk bridge unreachable", so the owner's Inbox never came forward.
+    """
+    try:
+        text = desk_bridge_port_file().read_text(encoding="ascii", errors="replace").strip()
+        port = int(text)
+        return port if 0 < port < 65536 else default
+    except (OSError, ValueError):
+        return default
+
+
+def desk_bridge_url(host: str = "127.0.0.1",
+                    default: int = DESK_BRIDGE_DEFAULT_PORT) -> str:
+    """Where the live desk bridge answers: an explicit env URL, else the persisted port."""
+    explicit = (os.getenv("AWDESK_URL") or os.getenv("AITHERSHELL_AWDESK_URL") or "").strip()
+    if explicit:
+        # awsh hands AITHERSHELL_AWDESK_URL over as the EVENT stream (".../events");
+        # this client wants the base, so calling "/events/fleet/status" is avoided.
+        return explicit.rstrip("/").removesuffix("/events")
+    return f"http://{host}:{desk_bridge_port(default)}"
+
 
 @dataclass
 class NotifyResult:
@@ -449,11 +494,14 @@ def raise_desk_inbox(timeout: float = 4.0, card_id: Optional[str] = None) -> Opt
 
     if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("AITHER_NO_GUI_PROMPT"):
         return "the desk Inbox is not raised under test"
-    base = (os.getenv("AWDESK_URL") or os.getenv("AITHERSHELL_AWDESK_URL")
-            or "http://127.0.0.1:47931").rstrip("/")
-    req = urllib.request.Request(base + "/console/open", method="POST",
-                                 data=json.dumps({"pane": "inbox", **({"card": card_id} if card_id else {})}
-                                                ).encode("utf-8"))
+    base = desk_bridge_url()
+    payload = {"pane": "inbox"}
+    if card_id:
+        payload["card"] = card_id
+    req = urllib.request.Request(
+        base + "/console/open", method="POST",
+        data=json.dumps(payload).encode("utf-8"),
+    )
     req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:  # noqa: S310
