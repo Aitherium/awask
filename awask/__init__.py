@@ -65,7 +65,7 @@ from awask.store import (
     rank,
 )
 
-__version__ = "0.2.2"
+__version__ = "0.2.3"
 
 __all__ = [
     "STATUS_ANSWERED",

@@ -140,5 +140,6 @@ def test_the_installer_wires_the_stash_to_askuserquestion_only(tmp_path):
     added, _notes = install.merge_settings(tmp_path, dry_run=False)
     data = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
     pre = data["hooks"]["PreToolUse"]
-    assert [g["matcher"] for g in pre] == ["AskUserQuestion"]
+    assert [g["matcher"] for g in pre
+            if "awask_ask_stash.py" in g["hooks"][0]["command"]] == ["AskUserQuestion"]
     assert all(g["matcher"] == "" for g in data["hooks"]["Notification"])

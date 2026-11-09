@@ -17,6 +17,8 @@ Three files into ``<target>/hooks/``, and three entries into ``<target>/settings
   UserPromptSubmit  awask_mailbox_drain.py      carries your answer INTO the session
   Notification      awask_notification_card.py  "the agent is waiting" becomes a card
   PreToolUse        awask_ask_stash.py          an AskUserQuestion's options reach that card
+  PreToolUse        awask_tool_stash.py         a permission card names the waiting call
+  PostToolUse       awask_tool_done.py          ...and forgets it once it ran
 
 The middle one is the one people skip and the one that matters: without it you can
 answer a card and the agent never learns you did.
@@ -63,6 +65,10 @@ HOOKS = {
     # Stashes an AskUserQuestion's options before its dialog shows, so the
     # Notification card can offer them (the transcript lags the screen).
     "awask_ask_stash.py": "PreToolUse",
+    # One file per waiting tool call, removed when it runs: a permission card names
+    # exactly the call it is about, or stays generic when that is not certain.
+    "awask_tool_stash.py": "PreToolUse",
+    "awask_tool_done.py": "PostToolUse",
 }
 
 #: hook filename -> the tool matcher its entry carries (default: every tool).

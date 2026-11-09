@@ -44,8 +44,8 @@ PAIRS_WITH = ['awdiscord', 'adk', 'awmail', 'awnest', 'awrelay', 'awrise']
 #: gets ignored.
 ENV_REQUIRED = []
 ENV_OPTIONAL = [
-    'AWASK_ASK_TTL', 'AWASK_GROUPING', 'AWASK_NOTIFY_COOLDOWN', 'AWASK_NOTIFY_WAIT_TTL',
-    'AWASK_STOP_WAIT',
+    'AWASK_ASK_TTL', 'AWASK_CALL_TTL', 'AWASK_GROUPING', 'AWASK_NOTIFY_COOLDOWN',
+    'AWASK_NOTIFY_WAIT_TTL', 'AWASK_STOP_WAIT',
 ]
 
 

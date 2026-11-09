@@ -33,6 +33,15 @@ PreToolUse hook ``awask_ask_stash.py`` now stashes the ask's ``tool_input`` unde
 state dir; this hook reads it and offers the question's own options as ``tui:<n>``
 (the terminal's numbering), so a surface that can type into the session answers it.
 
+**A permission prompt names the exact waiting call.** The same lag left a permission
+card quoting an OLDER tool from the transcript. ``awask_tool_stash.py`` (PreToolUse)
+writes one small redacted file per call and ``awask_tool_done.py`` (PostToolUse)
+deletes it, so the calls still waiting are exactly the files left. When exactly ONE
+fresh call is waiting (and the notification text, if it names a tool, names that
+one) the card quotes it and offers ``tui:1`` "Yes, run it" -- Claude Code's
+permission dialog puts Yes at 1 -- plus ``tui:type`` and ``later``. Never "don't ask
+again". Anything less certain keeps the generic card.
+
 Installed by ``awask install-hooks``. Standard library only; never breaks a turn.
 """
 
@@ -236,6 +245,113 @@ def pending_ask(session_id: str, ctx: Optional[dict] = None) -> Optional[dict]:
     if ctx.get("pending_ask"):
         return {"id": str(ctx.get("pending_ask_id") or ""), "questions": ctx["pending_ask"]}
     return None
+
+
+#: A stashed call older than this cannot be the one a permission prompt is about.
+CALL_TTL_SECONDS = float(os.getenv("AWASK_CALL_TTL", "30"))
+#: Tools whose permission dialog is NOT "1. Yes" (or that have their own card).
+_UNMAPPED_TOOLS = {ASK_TOOL, "ExitPlanMode"}
+_MSG_TOOL_RE = re.compile(r"permission to use\s+([A-Za-z0-9_.:-]+)", re.IGNORECASE)
+
+
+def _calls_dir(session_id: str) -> Path:
+    return state_dir() / ("%s.calls" % _safe_sid(session_id))
+
+
+def _call_file(session_id: str, tool_use_id: str) -> Path:
+    return _calls_dir(session_id) / ("%s.json" % _safe_sid(tool_use_id))
+
+
+def stash_call(payload: dict) -> bool:
+    """PreToolUse(any tool): record this call as waiting, redacted and small. One file
+    per call, so parallel calls never overwrite each other. True when stashed."""
+    session_id = str(payload.get("session_id") or "").strip()
+    tool = str(payload.get("tool_name") or "").strip()
+    args = payload.get("tool_input")
+    if not session_id or not tool:
+        return False
+    tid = str(payload.get("tool_use_id") or "").strip() or (
+        "noid-%s" % fingerprint(session_id, tool + json.dumps(args, sort_keys=True,
+                                                              default=str)))
+    what = _describe_tool({"name": tool, "input": args if isinstance(args, dict) else {}})
+    try:
+        f = _call_file(session_id, tid)
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({"ts": time.time(), "tool_use_id": tid, "tool": tool,
+                                 "what": _clip(redact_secrets(what), 400)}),
+                     encoding="utf-8")
+        return True
+    except OSError as exc:
+        sys.stderr.write("[warn] awask_notification_card: call not stashed: %s\n" % exc)
+        return False
+
+
+def clear_call(payload: dict) -> None:
+    """PostToolUse: the call ran, so it is no longer waiting."""
+    session_id = str(payload.get("session_id") or "").strip()
+    tid = str(payload.get("tool_use_id") or "").strip()
+    if not session_id or not tid:
+        return
+    try:
+        _call_file(session_id, tid).unlink(missing_ok=True)
+    except OSError as exc:  # TTL-bounded; a leftover only forces the generic card
+        sys.stderr.write("[warn] awask_notification_card: call not cleared: %s\n" % exc)
+
+
+def clear_calls(session_id: str) -> None:
+    d = _calls_dir(session_id)
+    try:
+        for f in d.glob("*.json"):
+            f.unlink(missing_ok=True)
+    except OSError as exc:
+        sys.stderr.write("[warn] awask_notification_card: calls not cleared: %s\n" % exc)
+
+
+def waiting_call(session_id: str, message: str = "") -> Optional[dict]:
+    """The ONE call a permission prompt can be about, ``{tool_use_id, tool, what}``, or
+    None whenever that is not certain: no fresh call, more than one, a tool whose
+    dialog is not "1. Yes", or a notification text that names a different tool."""
+    now = time.time()
+    fresh = []
+    try:
+        for f in _calls_dir(session_id).glob("*.json"):
+            try:
+                if now - f.stat().st_mtime >= CALL_TTL_SECONDS:
+                    f.unlink(missing_ok=True)
+                    continue
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, dict) and data.get("tool"):
+                fresh.append(data)
+    except OSError:
+        return None
+    if len(fresh) != 1:
+        return None
+    call = fresh[0]
+    tool = str(call.get("tool") or "")
+    if tool in _UNMAPPED_TOOLS:
+        return None
+    m = _MSG_TOOL_RE.search(message or "")
+    if m and m.group(1).rstrip(".").lower() != tool.lower():
+        return None
+    return {"tool_use_id": str(call.get("tool_use_id") or ""), "tool": tool,
+            "what": redact_secrets(str(call.get("what") or tool))}
+
+
+def permission_options(call: dict) -> list:
+    """Yes at 1 (the dialog's own number), "No / something else" opens the session,
+    and later. "Don't ask again" is never offered from a card."""
+    what = _clip(redact_secrets(call.get("what") or call.get("tool") or ""), 220)
+    return [
+        {"key": "tui:1", "label": "Yes, run it", "consequence": "runs %s" % what,
+         "recommended": False},
+        {"key": "tui:type", "label": "No / tell Claude something else",
+         "consequence": "opens the session; nothing runs until you answer there",
+         "recommended": False},
+        {"key": "later", "label": "Not now",
+         "consequence": "the session stays blocked; nothing is lost", "recommended": False},
+    ]
 
 
 #: Claude Code notification types that block the session until a human acts.
@@ -542,7 +658,7 @@ def _open_cards_for(store, session_id: str) -> list:
 
 
 def raise_card(payload: dict, session_id: str, message: str, need: str = "",
-               ask: Optional[dict] = None) -> bool:
+               ask: Optional[dict] = None, call: Optional[dict] = None) -> bool:
     try:
         from awask.store import DecisionCard, DecisionOption, DecisionSource, get_store
     except Exception:
@@ -555,6 +671,9 @@ def raise_card(payload: dict, session_id: str, message: str, need: str = "",
             # store refuses a key it has seen, whatever that card's status).
             key = "%s%s:ask-%s" % (KEY_PREFIX, session_id,
                                    fingerprint(session_id, need + "\x00" + ask.get("id", "")))
+        elif call:
+            key = "%s%s:perm-%s" % (KEY_PREFIX, session_id, fingerprint(
+                session_id, need + "\x00" + call.get("tool_use_id", "")))
         else:
             key = (wait_key(session_id) if kind not in BLOCKING_TYPES
                    else "%s%s:perm-%s" % (KEY_PREFIX, session_id,
@@ -572,6 +691,21 @@ def raise_card(payload: dict, session_id: str, message: str, need: str = "",
                 id="", title=parts["title"], summary=parts["summary"], kind="blocked",
                 facts=parts["facts"],
                 options=[DecisionOption(**o) for o in parts["options"]],
+                default_key="later", urgency="high", dedupe_key=key, source=source)
+            if session_id:
+                card.subject = "session:%s" % session_id
+            store.create(card)
+            return True
+        if call:
+            ctx = dict(ctx, pending_tool=call["what"])
+            card = DecisionCard(
+                id="", title=card_title(payload, ctx),
+                summary=card_summary(message, ctx, "permission_prompt", need),
+                kind="blocked",
+                facts=["Claude Code is asking permission to run exactly this call.",
+                       "Yes answers 1 in that terminal; the desk types it only into the "
+                       "confirmed session tab."],
+                options=[DecisionOption(**o) for o in permission_options(call)],
                 default_key="later", urgency="high", dedupe_key=key, source=source)
             if session_id:
                 card.subject = "session:%s" % session_id
@@ -614,6 +748,7 @@ def resolve(session_id: str) -> int:
     """UserPromptSubmit: the owner is back in this session, so its wait is over."""
     clear_wait(session_id)
     clear_ask(session_id)
+    clear_calls(session_id)
     if not session_id:
         return 0
     try:
@@ -643,6 +778,13 @@ def handle(payload: dict) -> bool:
             return False
         return bool(raise_card(payload, session_id, message, need, ask=ask))
     blocking = kind in BLOCKING_TYPES or (not kind and "permission" in message.lower())
+    if blocking and kind != "elicitation_dialog":
+        call = waiting_call(session_id, message)
+        if call:
+            need = "permission to run %s" % call["what"]
+            if recently_raised(fingerprint(session_id, "call\x00" + call["tool_use_id"])):
+                return False
+            return bool(raise_card(payload, session_id, message, need, call=call))
     if blocking:
         tool = ctx.get("pending_tool") or ""
         need = ("permission to run %s" % tool) if tool else message
@@ -667,6 +809,12 @@ def main() -> int:
         return _quiet()
     if "--stash-ask" in sys.argv:
         stash_ask(payload)
+        return _quiet()
+    if "--stash-call" in sys.argv:
+        stash_call(payload)
+        return _quiet()
+    if "--call-done" in sys.argv:
+        clear_call(payload)
         return _quiet()
     handle(payload)
     return _quiet()
@@ -763,6 +911,27 @@ def self_test() -> int:
               "Zx9Qw81LmN0pRtYv" not in json.dumps(parts["options"]))
         clear_ask("sa")
         check("resolve clears the stash", pending_ask("sa", {}) is None)
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["AITHER_DECISIONS_DIR"] = tmp
+        bash = {"tool_name": "Bash", "session_id": "sp", "tool_use_id": "tb1",
+                "tool_input": {"command": "systemctl restart relay --token=Zx9Qw81LmN0pRtYv"}}
+        check("a call is stashed", stash_call(bash))
+        call = waiting_call("sp", "Claude needs your permission to use Bash")
+        check("the one waiting call is named", bool(call) and call["tool"] == "Bash")
+        check("the stash is redacted", bool(call) and "Zx9Qw81LmN0pRtYv" not in call["what"])
+        check("a message naming another tool falls back",
+              waiting_call("sp", "Claude needs your permission to use Write") is None)
+        opts = [o["key"] for o in permission_options(call or {})]
+        check("options: Yes at 1, open the session, later",
+              opts == ["tui:1", "tui:type", "later"])
+        check("never 'don't ask again'",
+              "ask again" not in json.dumps(permission_options(call or {})).lower())
+        stash_call(dict(bash, tool_use_id="tb2"))
+        check("two waiting calls fall back", waiting_call("sp", "") is None)
+        clear_call(dict(bash, tool_use_id="tb2"))
+        check("a finished call stops waiting", waiting_call("sp", "") is not None)
+        clear_calls("sp")
+        check("resolve clears every call", waiting_call("sp", "") is None)
     check("an unreadable transcript is empty context, not a crash",
           transcript_context(os.path.join(os.devnull, "nope.jsonl")) == {})
 
