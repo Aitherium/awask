@@ -16,7 +16,8 @@ Three files into ``<target>/hooks/``, and three entries into ``<target>/settings
   Stop              stop_steer_drain.py         a steer in the mailbox becomes the next turn
   UserPromptSubmit  awask_mailbox_drain.py      carries your answer INTO the session
   Notification      awask_notification_card.py  "the agent is waiting" becomes a card
-  PreToolUse        awask_ask_stash.py          an AskUserQuestion's options reach that card
+  PreToolUse        awask_ask_stash.py          an AskUserQuestion's options reach that card;
+                                                while you are away, the card answers it
   PreToolUse        awask_tool_stash.py         a permission card names the waiting call
   PostToolUse       awask_tool_done.py          ...and forgets it once it ran
 

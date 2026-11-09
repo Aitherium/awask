@@ -3,8 +3,8 @@
 The transcript lags the screen (measured 2026-11-08), so a permission card that read
 the waiting tool from it quoted an OLDER call. One stash file per call (PreToolUse),
 removed when the call runs (PostToolUse), leaves exactly the calls still waiting.
-"Yes" is offered only when that set is one fresh call, because the desk types "1"
-into the terminal and must never approve a call the card did not describe.
+The call is named only when that set is one fresh call; no Yes button is offered,
+because nothing can deliver a keystroke into the terminal (measured 2026-11-08).
 """
 from __future__ import annotations
 
@@ -68,8 +68,7 @@ def test_the_card_names_the_waiting_call_not_the_stale_transcript(tmp_path):
     card = _card()
     assert "Bash: systemctl restart aither-relay" in card.summary
     assert "C:/old.txt" not in card.summary
-    assert [o.key for o in card.options] == ["tui:1", "tui:type", "later"]
-    assert card.options[0].label == "Yes, run it"
+    assert [o.key for o in card.options] == ["tui:type", "later"]
     assert "systemctl restart aither-relay" in card.options[0].consequence
     assert card.default_key == "later"
     assert "ask again" not in json.dumps([o.to_dict() for o in card.options]).lower()
@@ -78,7 +77,8 @@ def test_the_card_names_the_waiting_call_not_the_stale_transcript(tmp_path):
 def test_a_message_without_a_tool_name_still_maps_one_fresh_call(tmp_path):
     _pre()
     assert _notify(tmp_path, message="Claude needs your permission") is True
-    assert _card().options[0].key == "tui:1"
+    assert "Bash: systemctl restart aither-relay" in _card().summary
+    assert _card().options[0].key == "tui:type"
 
 
 @pytest.mark.parametrize("setup", ["none", "two", "stale", "other_tool", "plan", "done"])
@@ -130,7 +130,7 @@ def test_an_askuserquestion_still_gets_its_own_card(tmp_path):
                     "tool_input": {"questions": [{"question": "Which?", "header": "H",
                                                   "options": [{"label": "A"}]}]}})
     assert _notify(tmp_path, message="Claude needs your permission") is True
-    assert [o.key for o in _card().options] == ["tui:1", "tui:type", "later"]
+    assert [o.key for o in _card().options] == ["tui:type", "later"]
     assert _card().title == "H: Which?"
 
 

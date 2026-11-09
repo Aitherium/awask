@@ -73,11 +73,11 @@ def test_the_stash_reaches_the_card_when_the_transcript_lags(tmp_path):
     assert hook.handle(_payload(tmp_path)) is True
     [card] = [c for c in get_store().list(session_id="s1")]
     assert card.title.startswith("CertTracker: I couldn't find CertTracker")
-    keys = [o.key for o in card.options]
-    assert keys == ["tui:1", "tui:2", "tui:3", "tui:4", "tui:type", "later"]
-    assert [o.label for o in card.options[:4]] == [
-        "Jason uploaded it", "I'll drop it", "It's a GitHub repo", "Build it fresh"]
-    assert card.options[1].consequence == "You'll put the zip in Downloads."
+    # The dialog is on screen: options are LISTED (nothing can type into the
+    # terminal), and the one action is opening the session.
+    assert [o.key for o in card.options] == ["tui:type", "later"]
+    assert "2. I'll drop it -- You'll put the zip in Downloads." in card.facts
+    assert "4. Build it fresh -- It doesn't exist as code yet." in card.facts
     assert "Which teaser version" in card.summary and "Full world pack" in card.summary
     assert card.source.agent == "claude-code" and card.source.session_id == "s1"
     assert card.default_key == "later"

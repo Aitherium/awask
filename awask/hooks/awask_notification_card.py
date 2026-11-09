@@ -38,9 +38,20 @@ card quoting an OLDER tool from the transcript. ``awask_tool_stash.py`` (PreTool
 writes one small redacted file per call and ``awask_tool_done.py`` (PostToolUse)
 deletes it, so the calls still waiting are exactly the files left. When exactly ONE
 fresh call is waiting (and the notification text, if it names a tool, names that
-one) the card quotes it and offers ``tui:1`` "Yes, run it" -- Claude Code's
-permission dialog puts Yes at 1 -- plus ``tui:type`` and ``later``. Never "don't ask
-again". Anything less certain keeps the generic card.
+one) the card quotes it and offers "Open the session" (``tui:type``) and ``later``.
+No Yes button: nothing can deliver it into the terminal (see below). Anything less
+certain keeps the generic card.
+
+**When the owner is away, the card IS the answer path -- no keystrokes.** Measured
+2026-11-08: typing a card's option number into Windows Terminal (SendKeys) reported
+success and reached nothing. Claude Code documents the real path: a PreToolUse hook
+on AskUserQuestion that returns ``permissionDecision: "allow"`` with ``updatedInput``
+holding ``answers`` (question text -> option label) runs the tool without the dialog.
+So ``awask_ask_stash.py`` HOLDS the ask -- raises one ``ans:<n>`` card per question
+and waits for the answers -- only while the owner is away from a terminal (another
+window in front, or idle). Back at a terminal, "Answer in the terminal", "Not now",
+or the hold timing out all release it to the ordinary dialog. A terminal user never
+waits.
 
 Installed by ``awask install-hooks``. Standard library only; never breaks a turn.
 """
@@ -344,14 +355,187 @@ def permission_options(call: dict) -> list:
     and later. "Don't ask again" is never offered from a card."""
     what = _clip(redact_secrets(call.get("what") or call.get("tool") or ""), 220)
     return [
-        {"key": "tui:1", "label": "Yes, run it", "consequence": "runs %s" % what,
-         "recommended": False},
-        {"key": "tui:type", "label": "No / tell Claude something else",
-         "consequence": "opens the session; nothing runs until you answer there",
+        {"key": "tui:type", "label": "Open the session",
+         "consequence": "brings it forward to approve or refuse %s" % what,
          "recommended": False},
         {"key": "later", "label": "Not now",
          "consequence": "the session stays blocked; nothing is lost", "recommended": False},
     ]
+
+
+#: How long an away owner's ask is held PER QUESTION before the dialog shows.
+HOLD_SECONDS = float(os.getenv("AWASK_ASK_HOLD_SECONDS", "120"))
+#: The whole set's ceiling: under Claude Code's 600 s command-hook default, so the
+#: hook always returns (and releases to the dialog) before it could be killed.
+HOLD_TOTAL_SECONDS = float(os.getenv("AWASK_ASK_HOLD_TOTAL_SECONDS", "540"))
+#: No keyboard/mouse input for this long = away, whatever window is in front.
+AWAY_IDLE_SECONDS = float(os.getenv("AWASK_AWAY_IDLE_SECONDS", "90"))
+_POLL_SECONDS = 1.0
+#: Foreground window classes that mean "the owner is at a terminal".
+_TERMINAL_CLASSES = {"CASCADIA_HOSTING_WINDOW_CLASS", "ConsoleWindowClass",
+                     "mintty", "PseudoConsoleWindow"}
+
+
+def _foreground_and_idle() -> Optional[tuple]:
+    """(foreground class, foreground title, idle seconds) on Windows, else None."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _LII(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+        user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+        lii = _LII(ctypes.sizeof(_LII), 0)
+        idle = 0.0
+        if user32.GetLastInputInfo(ctypes.byref(lii)):
+            idle = ((kernel32.GetTickCount() - lii.dwTime) & 0xFFFFFFFF) / 1000.0
+        hwnd = user32.GetForegroundWindow()
+        cls = ctypes.create_unicode_buffer(256)
+        title = ctypes.create_unicode_buffer(512)
+        user32.GetClassNameW(hwnd, cls, 256)
+        user32.GetWindowTextW(hwnd, title, 512)
+        return cls.value, title.value, idle
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+def owner_away() -> bool:
+    """Is the owner away from every terminal, so a card should carry the ask?
+
+    ``AWASK_ASK_HOLD``: ``never`` (default off-Windows) / ``always`` / ``auto``.
+    Auto = idle past AWAY_IDLE_SECONDS, or a non-terminal window in front (VS Code
+    counts as a terminal for a session started in its terminal). Unknown = NOT away:
+    the cost of a wrong "away" is a terminal user staring at no dialog."""
+    mode = os.getenv("AWASK_ASK_HOLD", "auto").strip().lower()
+    if mode in ("0", "off", "never", "no"):
+        return False
+    if mode in ("1", "on", "always", "yes"):
+        return True
+    seen = _foreground_and_idle()
+    if seen is None:
+        return False
+    cls, title, idle = seen
+    if idle >= AWAY_IDLE_SECONDS:
+        return True
+    if cls in _TERMINAL_CLASSES:
+        return False
+    if os.getenv("TERM_PROGRAM", "").lower() == "vscode" and "Visual Studio Code" in title:
+        return False
+    return bool(cls)
+
+
+def _hold_card(store, payload: dict, questions: list, index: int, tid: str,
+               answered: Optional[list] = None):
+    from awask.store import DecisionCard, DecisionOption, DecisionSource
+    session_id = str(payload.get("session_id") or "").strip()
+    parts = ask_card_parts(questions[index:], payload, {}, key_prefix="ans")
+    opts = []
+    for o in parts["options"]:
+        if o["key"] == "ans:type":
+            o = dict(o, label="Answer in the terminal",
+                     consequence="shows the question in the session now")
+        elif o["key"] == "later":
+            o = dict(o, consequence="shows the question in the session; nothing is lost")
+        opts.append(DecisionOption(**o))
+    facts = list(parts["facts"]) + [
+        "Answering here answers the session directly (no typing into the terminal)."]
+    summary = parts["summary"]
+    if len(questions) > 1:
+        left = len(questions) - index - 1
+        facts[1:2] = ["Question %d of %d. %s" % (
+            index + 1, len(questions),
+            "The next question follows as soon as you answer; nothing is sent to the "
+            "session until all %d are answered." % len(questions) if left
+            else "The last one: answering it sends all %d answers together."
+            % len(questions))]
+        if answered:
+            summary = redact_secrets("Answered so far: %s\n%s" % (
+                "; ".join("%s = %s" % (_clip(h, 40), _clip(a, 60)) for h, a in answered),
+                summary))[:2000]
+    card = DecisionCard(
+        id="", title=parts["title"], summary=summary, kind="blocked",
+        facts=facts, options=opts, default_key="later", urgency="high",
+        dedupe_key="%s%s:hold-%s" % (KEY_PREFIX, session_id,
+                                     fingerprint(session_id, "%s\x00%d" % (tid, index))),
+        source=DecisionSource(session_id=session_id, agent="claude-code",
+                              cwd=str(payload.get("cwd") or "")))
+    if session_id:
+        card.subject = "session:%s" % session_id
+    return store.create(card)
+
+
+def hold_answer(payload: dict, sleep=time.sleep, clock=time.time) -> Optional[dict]:
+    """PreToolUse(AskUserQuestion) while the owner is away: one card per question,
+    each raised the moment the previous one is answered, and NOTHING sent until the
+    whole set is answered -- then ONE PreToolUse output whose ``answers`` maps every
+    question to its label and answers the tool without its dialog (owner report
+    2026-11-08: "it only let me do the first answer then it closed the card").
+    None (the dialog shows as usual) on anything else: owner present or back, a
+    multi-select or option-less question, two questions with the same text, "Answer
+    in the terminal"/"Not now", a cancelled card, or a question's window passing."""
+    if str(payload.get("tool_name") or "") != ASK_TOOL:
+        return None
+    args = payload.get("tool_input")
+    raw = args.get("questions") if isinstance(args, dict) else None
+    questions = clean_questions(raw)
+    if not questions or len(questions) != len(raw) \
+            or any(q["multiSelect"] or not q["options"] for q in questions) \
+            or len({q["question"] for q in questions}) != len(questions):
+        # (answers is keyed by question text: two identical texts cannot both map)
+        return None
+    if not owner_away():
+        return None
+    try:
+        from awask.store import STATUS_ANSWERED, get_store
+        store = get_store()
+    except Exception as exc:
+        sys.stderr.write("[warn] awask_notification_card: no store to hold on: %s\n" % exc)
+        return None
+    tid = str(payload.get("tool_use_id") or "") or str(int(clock()))
+    ceiling = clock() + HOLD_TOTAL_SECONDS
+    answers: dict = {}
+    answered: list = []
+    for i, q in enumerate(questions):
+        # Each question gets its own window, so a three-tab ask is not squeezed into
+        # one question's time; the ceiling keeps the hook inside its timeout.
+        deadline = min(clock() + HOLD_SECONDS, ceiling)
+        try:
+            card = _hold_card(store, payload, questions, i, tid, answered)
+        except Exception as exc:
+            sys.stderr.write("[warn] awask_notification_card: hold card failed: %s\n" % exc)
+            return None
+        while True:
+            cur = store.get(card.id)
+            if cur is not None and cur.status == STATUS_ANSWERED:
+                break
+            why = ""
+            if cur is None or cur.status != "open":
+                why = "closed"
+            elif clock() >= deadline:
+                why = "the hold timed out; the question is in the terminal"
+            elif not owner_away():
+                why = "you are back at a terminal; answer it there"
+            if why:
+                if cur is not None and cur.status == "open":
+                    store.cancel(card.id, note=why)
+                return None
+            sleep(_POLL_SECONDS)
+        m = re.fullmatch(r"ans:(\d+)", str(cur.answer or ""))
+        n = int(m.group(1)) if m else 0
+        if not 1 <= n <= len(raw[i].get("options") or []):
+            return None  # "Answer in the terminal" / "Not now": release to the dialog
+        opt = raw[i]["options"][n - 1]
+        answers[raw[i]["question"]] = str(opt.get("label") if isinstance(opt, dict) else opt)
+        answered.append((q.get("header") or q["question"], answers[raw[i]["question"]]))
+    clear_ask(str(payload.get("session_id") or ""))
+    return {"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "allow",
+        "permissionDecisionReason": "answered on the owner's decision card",
+        "updatedInput": dict(args, answers=answers)}}
 
 
 #: Claude Code notification types that block the session until a human acts.
@@ -601,7 +785,8 @@ def card_title(payload: dict, ctx: Optional[dict] = None) -> str:
     return redact_secrets(title)[:200]
 
 
-def ask_card_parts(questions: list, payload: dict, ctx: Optional[dict] = None) -> dict:
+def ask_card_parts(questions: list, payload: dict, ctx: Optional[dict] = None,
+                   key_prefix: str = "tui", numbered: bool = True) -> dict:
     """Title, summary, facts and options for an AskUserQuestion card.
 
     The options ARE the first question's options, keyed ``tui:<n>`` with the 1-based
@@ -630,17 +815,23 @@ def ask_card_parts(questions: list, payload: dict, ctx: Optional[dict] = None) -
         facts.append("Question 1 of %d; the other %d need the session (or the next card)."
                      % (len(questions), len(questions) - 1))
     options = []
-    if not first.get("multiSelect"):
+    if not numbered:
+        for n, o in enumerate(first["options"], start=1):
+            desc = redact_secrets(o.get("description") or "")
+            facts.append(_clip("%d. %s%s" % (n, redact_secrets(o["label"]),
+                                             " -- " + desc if desc else ""), 240))
+    elif not first.get("multiSelect"):
         for n, o in enumerate(first["options"], start=1):
             label = redact_secrets(o["label"])
             desc = redact_secrets(o.get("description") or "")
-            options.append({"key": "tui:%d" % n, "label": _clip(label, 80),
+            options.append({"key": "%s:%d" % (key_prefix, n), "label": _clip(label, 80),
                             "consequence": _clip(desc or "answers %d in the terminal" % n, 240),
                             "recommended": "(recommended)" in label.lower()})
     else:
         facts.append("Multi-select: pick the answers in the session.")
-    options.append({"key": "tui:type", "label": "Type something",
-                    "consequence": "opens the session so you can type your own answer",
+    options.append({"key": "%s:type" % key_prefix,
+                    "label": "Type something" if numbered else "Open the session",
+                    "consequence": "opens the session so you can answer it there",
                     "recommended": False})
     options.append({"key": "later", "label": "Not now",
                     "consequence": "the session stays blocked; nothing is lost",
@@ -686,7 +877,10 @@ def raise_card(payload: dict, session_id: str, message: str, need: str = "",
         source = DecisionSource(session_id=session_id, agent="claude-code",
                                 cwd=str(payload.get("cwd") or ""))
         if ask:
-            parts = ask_card_parts(ask["questions"], payload, ctx)
+            # The dialog is already on screen: no card button can reach it (keys
+            # typed into Windows Terminal were measured to land nowhere), so the
+            # options are listed and the one action is opening the session.
+            parts = ask_card_parts(ask["questions"], payload, ctx, numbered=False)
             card = DecisionCard(
                 id="", title=parts["title"], summary=parts["summary"], kind="blocked",
                 facts=parts["facts"],
@@ -703,8 +897,7 @@ def raise_card(payload: dict, session_id: str, message: str, need: str = "",
                 summary=card_summary(message, ctx, "permission_prompt", need),
                 kind="blocked",
                 facts=["Claude Code is asking permission to run exactly this call.",
-                       "Yes answers 1 in that terminal; the desk types it only into the "
-                       "confirmed session tab."],
+                       "Approve or refuse it in the session."],
                 options=[DecisionOption(**o) for o in permission_options(call)],
                 default_key="later", urgency="high", dedupe_key=key, source=source)
             if session_id:
@@ -809,6 +1002,10 @@ def main() -> int:
         return _quiet()
     if "--stash-ask" in sys.argv:
         stash_ask(payload)
+        decision = hold_answer(payload)
+        if decision:
+            sys.stdout.write(json.dumps(decision))
+            return 0
         return _quiet()
     if "--stash-call" in sys.argv:
         stash_call(payload)
@@ -905,6 +1102,10 @@ def self_test() -> int:
         keys = [o["key"] for o in parts["options"]]
         check("options are the terminal's numbers",
               keys == ["tui:1", "tui:2", "tui:type", "later"])
+        listed = ask_card_parts(ask["questions"], {}, {}, numbered=False)
+        check("a dialog-side card lists options and only opens the session",
+              [o["key"] for o in listed["options"]] == ["tui:type", "later"]
+              and any(f.startswith("2. Build it fresh") for f in listed["facts"]))
         check("title is the question", parts["title"] == "CertTracker: Where is CertTracker?")
         check("the second question is in the summary", "Which teaser?" in parts["summary"])
         check("descriptions are redacted",
@@ -922,8 +1123,8 @@ def self_test() -> int:
         check("a message naming another tool falls back",
               waiting_call("sp", "Claude needs your permission to use Write") is None)
         opts = [o["key"] for o in permission_options(call or {})]
-        check("options: Yes at 1, open the session, later",
-              opts == ["tui:1", "tui:type", "later"])
+        check("options: open the session, later (no Yes it cannot deliver)",
+              opts == ["tui:type", "later"])
         check("never 'don't ask again'",
               "ask again" not in json.dumps(permission_options(call or {})).lower())
         stash_call(dict(bash, tool_use_id="tb2"))
@@ -932,6 +1133,37 @@ def self_test() -> int:
         check("a finished call stops waiting", waiting_call("sp", "") is not None)
         clear_calls("sp")
         check("resolve clears every call", waiting_call("sp", "") is None)
+    with tempfile.TemporaryDirectory() as tmp:
+        os.environ["AITHER_DECISIONS_DIR"] = tmp
+        os.environ["AWASK_ASK_HOLD"] = "never"
+        hq = {"tool_name": "AskUserQuestion", "session_id": "sh", "tool_use_id": "th",
+              "tool_input": {"questions": [{"question": "Which?", "header": "H",
+                                            "options": [{"label": "A"}, {"label": "B"}]}]}}
+        check("a present owner is never held", hold_answer(hq) is None)
+        os.environ["AWASK_ASK_HOLD"] = "always"
+        try:
+            from awask.store import get_store as _gs
+
+            def _answer_then_sleep(_s):
+                for c in _gs().list(session_id="sh"):
+                    if c.status == "open":
+                        _gs().answer(c.id, "ans:2")
+            out = hold_answer(hq, sleep=_answer_then_sleep)
+            hq2 = dict(hq, tool_use_id="th2", tool_input={"questions": [
+                {"question": "One?", "header": "A", "options": [{"label": "x"}, {"label": "y"}]},
+                {"question": "Two?", "header": "B", "options": [{"label": "p"}, {"label": "q"}]},
+            ]})
+            out2 = hold_answer(hq2, sleep=_answer_then_sleep)
+            check("a two-question set is sent only once BOTH are answered",
+                  bool(out2) and out2["hookSpecificOutput"]["updatedInput"]["answers"]
+                  == {"One?": "y", "Two?": "q"})
+            check("a card answer becomes updatedInput.answers",
+                  bool(out) and out["hookSpecificOutput"]["updatedInput"]["answers"]
+                  == {"Which?": "B"}
+                  and out["hookSpecificOutput"]["permissionDecision"] == "allow")
+        except ImportError:
+            check("awask.store importable for the hold arm", False)
+        os.environ.pop("AWASK_ASK_HOLD", None)
     check("an unreadable transcript is empty context, not a crash",
           transcript_context(os.path.join(os.devnull, "nope.jsonl")) == {})
 
