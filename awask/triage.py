@@ -243,7 +243,13 @@ def is_decision_pattern_json() -> dict:
     """
     # The queue order travels with the patterns, so the desk ranks cards the
     # way store.rank does (both are pinned by card_rank_cases.json).
-    from awask.store import RANK_FIRST_KINDS, URGENCY_RANK, stale_after_seconds
+    from awask.store import (
+        AUTO_DEFAULT_RANK,
+        NOOP_SUGGESTION_LABELS,
+        RANK_FIRST_KINDS,
+        URGENCY_RANK,
+        stale_after_seconds,
+    )
 
     return {
         "decision_kinds": sorted(TRIAGE_PATTERNS["decision_kinds"]),
@@ -252,4 +258,8 @@ def is_decision_pattern_json() -> dict:
         "rank_first_kinds": list(RANK_FIRST_KINDS),
         "urgency_rank": dict(URGENCY_RANK),
         "stale_after_seconds": stale_after_seconds(),
+        # Cards that answer themselves (a deadline applies their default, or the
+        # suggestion is one of these no-ops) sort BELOW cards needing the owner.
+        "noop_labels": list(NOOP_SUGGESTION_LABELS),
+        "auto_default_rank": AUTO_DEFAULT_RANK,
     }

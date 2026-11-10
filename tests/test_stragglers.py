@@ -99,3 +99,50 @@ def test_the_staleness_line_is_overridable(tmp_path, monkeypatch):
     card = store.create(_decision())
     _age(store, card, 2 * DAY)
     assert is_straggler(store.get(card.id))
+
+
+def test_a_card_that_answers_itself_yields_to_one_that_needs_the_owner(tmp_path):
+    """Owner, 2026-11-10: a 43 h "paid launch refused" card that picks its own
+    default floated over 99+ and hid a permission grant a session was stopped on.
+    A card the store will answer by itself ranks below every card needing a human."""
+    store = DecisionStore(tmp_path)
+    governor = store.create(DecisionCard(
+        id="",
+        title="Paid launch refused",
+        urgency="critical",
+        options=[
+            DecisionOption(key="refuse", label="Keep refusing"),
+            DecisionOption(key="launch", label="Launch"),
+        ],
+        default_key="refuse",
+        deadline=time.time() + 3600,
+    ))
+    share = store.create(DecisionCard(
+        id="",
+        title="Share: a blog post",
+        urgency="high",
+        options=[
+            DecisionOption(key="share", label="Share"),
+            DecisionOption(key="skip", label="Skip"),
+        ],
+        default_key="skip",
+    ))
+    grant = store.create(DecisionCard(
+        id="",
+        title="Permission grant",
+        options=[
+            DecisionOption(key="allow", label="Allow"),
+            DecisionOption(key="deny", label="Deny"),
+        ],
+        default_key="allow",
+    ))
+    _age(store, governor, 43 * 3600)
+    _age(store, share, 2 * 3600)
+    _age(store, grant, 60)
+    ordered = queue_order(store.list())
+    assert [c.title for c in ordered] == [
+        "Permission grant",
+        "Paid launch refused",
+        "Share: a blog post",
+    ]
+    assert sorted(c.id for c in ordered) == sorted([governor.id, share.id, grant.id])

@@ -148,6 +148,18 @@ RANK_FIRST_KINDS = ("credential", "blocked")
 
 URGENCY_RANK = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
+#: A suggested answer that changes nothing. A card carrying one, or carrying a
+#: deadline that will apply its own default, is a card nobody is waiting on: it
+#: yields to every card that needs the owner, whatever its urgency. Measured
+#: 2026-11-10: a 43 h revenue-governor card that keeps "Keep refusing" and streak
+#: cards that pick "Keep it scheduled" in 19 h floated over 99+ waiting cards and
+#: hid a permission grant a live session was stopped on. MUST equal
+#: ``RANK_RULES.noop_labels`` in awdesk's decision-cards.cjs (shared fixture).
+NOOP_SUGGESTION_LABELS = ("skip", "keep refusing", "keep it scheduled")
+
+#: The term's value for a self-answering card (0 = needs the owner).
+AUTO_DEFAULT_RANK = 1
+
 #: Owner ruling, 2026-11-07: a card nobody can act on any more must stop
 #: occupying the queue. An open card whose RAISER session is provably dead and
 #: which has no live waiter is retired as ``expired`` after this many hours, with
@@ -190,23 +202,71 @@ def is_straggler(card: "DecisionCard", now: Optional[float] = None) -> bool:
     return card.is_open and (t - card.created_at) > stale_after_seconds()
 
 
+def _field(card: Any, name: str) -> Any:
+    """One field from a ``DecisionCard`` OR its ``to_dict()`` shape (tests pass both)."""
+    if isinstance(card, dict):
+        return card.get(name)
+    return getattr(card, name, None)
+
+
+def suggested_label(card: Any) -> str:
+    """The label of the option the card suggests (``default_key``), else ``""``."""
+    key = str(_field(card, "default_key") or "").strip().lower()
+    if not key:
+        return ""
+    for opt in _field(card, "options") or []:
+        opt_key = str(_field(opt, "key") or "").strip().lower()
+        if opt_key == key:
+            return str(_field(opt, "label") or _field(opt, "key") or "")
+    return ""
+
+
+def is_noop_suggestion(card: Any) -> bool:
+    """The suggested answer changes nothing: "Skip", "Keep refusing", "Keep it scheduled"."""
+    label = suggested_label(card).strip().lower()
+    if not label:
+        return False
+    for noop in NOOP_SUGGESTION_LABELS:
+        if not label.startswith(noop):
+            continue
+        rest = label[len(noop):len(noop) + 1]
+        if not rest or not rest.isalnum():
+            return True
+    return False
+
+
+def has_auto_default(card: Any) -> bool:
+    """A future-proof self-answer: a deadline that applies the declared default."""
+    return (float(_field(card, "deadline") or 0) > 0
+            and bool(str(_field(card, "default_key") or "").strip()))
+
+
+def is_self_answering(card: Any) -> bool:
+    """Nobody is waiting on the owner: the card will answer itself, or its answer is a no-op."""
+    return has_auto_default(card) or is_noop_suggestion(card)
+
+
 def rank_key(card: "DecisionCard", now: Optional[float] = None) -> tuple:
     """The sort key of :func:`rank`, exposed so a test can name which term decided.
 
     1. credential / blocked first (a session is stopped on it);
-    2. urgency, critical first (an unknown urgency ranks as normal);
-    3. fresh before straggler (open past :func:`stale_after_seconds`);
-    4. age, oldest first -- the longest-blocking card of a tier leads;
-    5. id, so equal cards order the same way on every surface.
+    2. a card that ANSWERS ITSELF (a deadline applies its declared default) or
+       whose suggestion is a no-op ("Skip") yields to every card needing a human
+       -- whatever its urgency (measured 2026-11-10);
+    3. urgency, critical first (an unknown urgency ranks as normal);
+    4. fresh before straggler (open past :func:`stale_after_seconds`);
+    5. age, oldest first -- the longest-blocking card of a tier leads;
+    6. id, so equal cards order the same way on every surface.
     """
     t = time.time() if now is None else now
-    kind = (card.kind or "").strip().lower()
+    kind = (_field(card, "kind") or "").strip().lower()
     return (
         0 if kind in RANK_FIRST_KINDS else 1,
-        URGENCY_RANK.get((card.urgency or "").strip().lower(), 2),
+        AUTO_DEFAULT_RANK if is_self_answering(card) else 0,
+        URGENCY_RANK.get((_field(card, "urgency") or "").strip().lower(), 2),
         1 if is_straggler(card, t) else 0,
-        float(card.created_at or 0.0),
-        card.id or "",
+        float(_field(card, "created_at") or 0.0),
+        _field(card, "id") or "",
     )
 
 
