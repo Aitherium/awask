@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 from typing import Optional, Sequence
 
-from awask.notify import notify
+from awask.delivery import deliver_on_raise as notify
 from awask.render import (
     colour_enabled,
     print_card,

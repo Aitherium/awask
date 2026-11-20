@@ -28,7 +28,7 @@ Shape of ``ui``::
      "messages": [<createSurface>, <updateComponents>]}
 
 ``messages`` are A2UI v0.9 server messages as JSON objects; joined one per line
-they pass ``AitherOS/lib/a2ui.py``'s ``validate`` unchanged. This module does NOT
+they pass the platform's ``a2ui.py`` ``validate`` unchanged. This module does NOT
 import that file: awdk is published on its own (gate 1zi,
 ``check_adk_publishable.py``), so the subset check is implemented here and kept
 compatible with that schema -- same version string, same catalog id, same

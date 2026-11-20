@@ -112,6 +112,63 @@ STATUS_CANCELLED = "cancelled"
 #: Terminal statuses. A card in one of these is never re-answerable.
 CLOSED_STATUSES = frozenset({STATUS_ANSWERED, STATUS_EXPIRED, STATUS_CANCELLED})
 
+
+# -- free text never answers a card ------------------------------------------
+#
+# Measured 2026-11-16 (d-9vph): the owner typed an angry, unrelated sentence in
+# a Claude Code tab and the UserPromptSubmit hook closed a card as its DEFAULT
+# ("hold") before any screen had shown it. A reply answers a card only when it
+# NAMES an option -- the key or the label -- and this is the ONE rule every
+# terminal-reply path (hook, triage T6, ``DecisionStore.answer``) shares.
+
+#: A reply longer than this must also name the card id: a rant that happens to
+#: contain the word "keep" is conversation, a short "keep it" is a choice.
+REPLY_MAX_WORDS = 6
+_REPLY_NOTE_PREFIX = re.compile(r"^terminal reply(?:\s*\([^)]*\))?\s*:\s*", re.I)
+
+
+def _reply_norm(text: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(text or "").lower()).strip()
+
+
+def _opt_field(opt: Any, name: str) -> str:
+    value = opt.get(name) if isinstance(opt, dict) else getattr(opt, name, "")
+    return str(value or "")
+
+
+def reply_choice(text: Any, options: Iterable[Any], card_id: str = "") -> Optional[str]:
+    """The ONE option key a free-text reply names, or None (the card stays OPEN).
+
+    Names = the whole reply IS a key/label; or the reply is short
+    (``REPLY_MAX_WORDS``) and contains exactly one option's whole key/label; or
+    the reply carries the card id and contains exactly one. Zero or several
+    named options -> None. Never the default, never the recommendation.
+    """
+    said = _reply_norm(_REPLY_NOTE_PREFIX.sub("", str(text or "")))
+    if not said:
+        return None
+    id_named = bool(card_id) and _reply_norm(card_id) in said
+    names: dict[str, set[str]] = {}
+    for opt in options or ():
+        key = _opt_field(opt, "key")
+        label = _opt_field(opt, "label")
+        for n in (_reply_norm(label), _reply_norm(key)):
+            if n:
+                names.setdefault(key, set()).add(n)
+    exact = sorted(k for k, ns in names.items() if said in ns)
+    if len(exact) == 1:
+        return exact[0]
+    if len(said.split()) > REPLY_MAX_WORDS and not id_named:
+        return None
+    padded = f" {said} "
+    hits = {k: max((n for n in ns if f" {n} " in padded), key=len, default="")
+            for k, ns in names.items()}
+    hits = {k: n for k, n in hits.items() if n}
+    # "keep" inside "keep both": the longer name is the one the reply meant.
+    hits = {k: n for k, n in hits.items()
+            if not any(n != m and f" {n} " in f" {m} " for m in hits.values())}
+    return next(iter(hits)) if len(hits) == 1 else None
+
 URGENCIES = ("low", "normal", "high", "critical")
 
 #: Statuses a dedupe key no longer HOLDS. A card an AGENT cancelled (withdrawn,
@@ -172,6 +229,28 @@ RETIRE_AFTER_SECONDS = 24 * 3600
 #: the whole point of the tier is that it does not go away on its own.
 RETIRE_SKIP_KINDS = frozenset({"credential", "blocked", "blocker"})
 
+#: The ``source.agent`` names of a card BOUND TO ONE SESSION'S LIFE. A permission
+#: grant asks "may THIS session run this call"; when the session is gone the
+#: question cannot be answered into anything -- granting would write an allow
+#: rule for a caller that no longer exists, and denying changes nothing. Measured
+#: 2026-11-20: the desk tray showed the same ``Allow Claude to use: Bash(...)``
+#: card twice, plus "+5 more", for sessions that had ended hours earlier, and one
+#: popup announced a grant "waiting 1 h" for a dead session. They are raised as
+#: ``kind="blocked"``, which the tier above protects from auto-retirement, so they
+#: needed their own rule rather than a shorter TTL.
+PERMISSION_GRANT_AGENTS = frozenset({"claude-permission-grant"})
+
+#: How long a card of each kind may sit open once its RAISER is provably gone.
+#: The requester of a decision/info card cannot read the answer any more, so the
+#: card is history; a blocked/blocker card keeps the longer window because the
+#: owner should still see that a session stopped on him. ``credential`` has no
+#: TTL: a secret may be wanted by the next session too, so it is never retired on
+#: its raiser's death alone. Per-kind overrides are in :func:`kind_ttl_seconds`.
+KIND_TTL_SECONDS: dict[str, float] = {
+    "info": INFO_TTL_SECONDS,
+    "blocked": 12 * 3600,
+    "blocker": 24 * 3600,
+}
 
 
 def _env_seconds(name: str, default: float, unit: float) -> float:
@@ -194,6 +273,85 @@ def stale_after_seconds() -> float:
 def retire_after_seconds() -> float:
     """How long a dead-session card may sit open before the store retires it."""
     return _env_seconds("AITHER_DECISIONS_RETIRE_HOURS", RETIRE_AFTER_SECONDS, 3600)
+
+
+def unbound_grant_ttl_seconds() -> float:
+    """How long a permission grant that names NO session survives.
+
+    Legacy cards: before 2026-11-20 the raise carried no session id and no pid
+    (measured on the owner's store that day: four ``Allow Claude to use: ...``
+    cards, 20-22 h old, ``session_id=""`` and ``session_pid=0``), so positive
+    proof of death is impossible for them. A grant that names no session can
+    also never be answered into anything meaningful -- granting writes a
+    standing allow rule for an UNKNOWN caller -- so it retires on its KIND's
+    window (the blocked TTL, 12 h), not at once and not never. Override:
+    ``AITHER_DECISIONS_UNBOUND_GRANT_TTL_HOURS``.
+    """
+    return _env_seconds("AITHER_DECISIONS_UNBOUND_GRANT_TTL_HOURS",
+                        kind_ttl_seconds("blocked") or RETIRE_AFTER_SECONDS,
+                        3600)
+
+
+def kind_ttl_seconds(kind: str) -> Optional[float]:
+    """How long a card OF THIS KIND survives its requester being provably gone.
+
+    ``None`` means "never retire on the death of its raiser" (credential asks:
+    the secret outlives the session that first wanted it). Env overrides:
+    ``AITHER_DECISIONS_INFO_TTL_HOURS``, ``AITHER_DECISIONS_BLOCKED_TTL_HOURS``,
+    ``AITHER_DECISIONS_RETIRE_HOURS`` (every other kind).
+    """
+    k = (kind or "decision").strip().lower()
+    if k == "credential":
+        return None
+    if k == "info":
+        return info_ttl_seconds()
+    if k in ("blocked", "blocker"):
+        default = KIND_TTL_SECONDS.get(k, 12 * 3600)
+        return _env_seconds("AITHER_DECISIONS_BLOCKED_TTL_HOURS", default, 3600)
+    return retire_after_seconds()
+
+
+def _source_field(card: Any, name: str) -> Any:
+    """One field from the card's ``source`` (a ``DecisionSource`` or a dict)."""
+    src = _field(card, "source")
+    if src is None:
+        return None
+    if isinstance(src, dict):
+        return src.get(name)
+    return getattr(src, name, None)
+
+
+def is_permission_grant(card: Any) -> bool:
+    """A card that asked permission for ONE session's call (``claude-permission-grant``).
+
+    Identified by the raising agent the tool records in ``raised_by``; a card
+    whose ``kind`` says so is accepted too, so a future raiser cannot be missed
+    by spelling.
+    """
+    agent = str(_source_field(card, "agent") or "").strip().lower()
+    kind = str(_field(card, "kind") or "").strip().lower()
+    return agent in PERMISSION_GRANT_AGENTS or kind in PERMISSION_GRANT_AGENTS
+
+
+def is_actionable(card: Any, *, directory: Optional[Path] = None) -> bool:
+    """Can anyone still act on this card? False only on POSITIVE proof they cannot.
+
+    The one case that needs no waiting: a permission grant whose requester is
+    provably gone. Granting it would write an allow rule for a session that no
+    longer exists, and denying it changes nothing, so no surface should count or
+    show it -- even during the seconds before the retirement sweep closes it.
+    Everything else stays actionable here: a credential ask, and any card whose
+    requester cannot be measured, must never be hidden.
+    """
+    if not is_permission_grant(card):
+        return True
+    if str(_field(card, "kind") or "").strip().lower() == "credential":
+        return True
+    try:
+        from awask import liveness
+    except ImportError:  # pragma: no cover - packaging accident
+        return True
+    return not liveness.raiser_gone(card, directory=directory)
 
 
 def is_straggler(card: "DecisionCard", now: Optional[float] = None) -> bool:
@@ -284,6 +442,25 @@ def queue_order(cards: "Iterable[DecisionCard]",
     """The order the INTERRUPTING window walks. Kept as a name for its callers;
     it is :func:`rank`, so the window and every other surface agree."""
     return rank(cards, now)
+
+
+def surface_order(cards: "Iterable[DecisionCard]",
+                  now: Optional[float] = None) -> "list[DecisionCard]":
+    """What to act on NOW — the order the ONE-CARD surfaces walk.
+
+    Owner, 2026-11-20, on an inbox of 58: "the newest high-urgency card is
+    always the one surfaced". :func:`rank` answers "what has waited longest" and
+    is right for a LIST; a surface that shows ONE card must lead with the ask
+    that needs him in this minute, so this delegates to :func:`awask.beam.ask_rank`
+    -- needs-you kinds first, then urgency, then NEWEST first -- and the desk
+    (``decision-cards.cjs`` ``surfaceCards``) implements the same key. There is
+    no second ranking rule here; the beam is the engine and this is the name a
+    store caller reaches for.
+    """
+    from awask import beam
+
+    t = time.time() if now is None else now
+    return sorted(cards, key=lambda c: beam.ask_rank(c, t))
 
 
 def credential_dedupe_key(card: "DecisionCard") -> str:
@@ -1614,9 +1791,12 @@ class DecisionStore:
         one you most need to see, so it must not be pushed off the bottom of a
         cockpit row or a toast that shows only the first entry. ``order="queue"``
         returns :func:`rank` instead -- the one ordering every surface shares.
+        ``order="surface"`` returns :func:`surface_order`, the ONE-CARD order
+        (needs-you kinds, then urgency, then newest first).
         """
-        if order not in ("age", "queue"):
-            raise DecisionError(f"order must be 'age' or 'queue', got {order!r}")
+        if order not in ("age", "queue", "surface"):
+            raise DecisionError(
+                f"order must be 'age', 'queue' or 'surface', got {order!r}")
         wanted: Optional[set[str]]
         if status is None:
             wanted = None
@@ -1653,6 +1833,8 @@ class DecisionStore:
             out.append(card)
         if order == "queue":
             return rank(out)
+        if order == "surface":
+            return surface_order(out)
         out.sort(key=lambda c: c.created_at, reverse=newest_first)
         return out
 
@@ -1752,34 +1934,72 @@ class DecisionStore:
                                now: float) -> Optional[str]:
         """The audit reason when ``card`` may auto-retire at ``now``, else None.
 
-        POSITIVE proof only: the raising session's process must be gone AND no
-        waiter may still be alive. An unmeasurable session is never "gone", so a
-        card whose liveness cannot be read keeps sitting in the queue -- hiding a
-        real ask is far worse than carrying a dead one for another hour. The
-        protected kinds (credential, blocked, blocker) never auto-retire at all:
-        they are exactly the asks that must not disappear on their own.
+        THE one requester-gone rule, shared by :meth:`retire_gone`,
+        :meth:`retire_stale` and :meth:`_expire_if_due` so no two sweeps can
+        disagree about a card:
+
+        * ``credential`` never retires on its raiser's death -- the secret
+          outlives the session that first wanted it;
+        * a **permission grant** whose session/pid is recorded retires
+          IMMEDIATELY (no age gate) once that requester is provably gone: a
+          grant for a dead session can never be acted on;
+        * a **permission grant with NO requester recorded** (every card raised
+          before 2026-11-20) retires on :func:`unbound_grant_ttl_seconds` --
+          it can never be answered into anything that names a caller, but the
+          grant is not "provably dead" either, so it is not closed at once;
+        * anything else retires past its KIND'S TTL (:func:`kind_ttl_seconds`)
+          -- 12 h for a blocked session, 6 h for info, the store's retire
+          window otherwise.
+
+        Otherwise POSITIVE proof only: the requester must be provably gone AND
+        no waiter may still be alive. An unmeasurable, RECORDED requester is
+        never "gone", so a card whose liveness cannot be read keeps sitting in
+        the queue -- hiding a real ask is far worse than carrying a dead one for
+        another hour.
         """
-        if card.kind in RETIRE_SKIP_KINDS:
+        kind = (card.kind or "").strip().lower()
+        if kind == "credential":
             return None
-        threshold = retire_after_seconds()
-        if now < float(card.created_at or 0.0) + threshold:
-            return None
+        grant = is_permission_grant(card)
         try:
             from awask import liveness
-        except ImportError:
+        except ImportError:  # pragma: no cover - packaging accident
+            return None
+        created = float(card.created_at or 0.0)
+        if grant:
+            bound = bool(liveness.requester_session(card)) or liveness.requester_pid(card) > 0
+            if not bound:
+                ttl = unbound_grant_ttl_seconds()
+                if now < created + ttl:
+                    return None
+                for waiter in card.waiters or ():
+                    if liveness.waiter_alive(waiter):
+                        return None
+                return ("requester gone: no session was recorded on this grant "
+                        f"after {ttl / 3600:g}h, so it names no caller")
+            if not liveness.raiser_gone(card):
+                return None
+            for waiter in card.waiters or ():
+                if liveness.waiter_alive(waiter):
+                    return None
+            return "requester gone"
+        ttl = kind_ttl_seconds(kind)
+        if ttl is None or now < created + float(ttl):
             return None
         if not liveness.raiser_gone(card):
             return None
         for waiter in card.waiters or ():
             if liveness.waiter_alive(waiter):
                 return None
-        session_id = str(getattr(card.source, "session_id", "") or "").strip()
-        who = f"session {session_id}" if session_id else "the raising session"
-        return (f"{who} is gone and no waiter was left after "
-                f"{threshold / 3600:g}h; the declared default applied")
+        who = liveness.requester_label(card) or "the raising session"
+        return (f"requester gone: {who} was not left after "
+                f"{float(ttl) / 3600:g}h; the declared default applied")
 
-    def _retire(self, card: DecisionCard, reason: str, now: float) -> bool:
-        """Close ``card`` as expired on a dead session. Returns True when it did."""
+    def _retire(self, card: DecisionCard, reason: str, now: float, *,
+                via: str = "session-gone",
+                note: str = ("no live session was left to read the answer; "
+                             "the declared default applied")) -> bool:
+        """Close ``card`` as expired on a dead requester. Returns True when it did."""
         with self._lock:
             fresh = self.get(card.id)
             if fresh is None or not fresh.is_open:
@@ -1787,9 +2007,8 @@ class DecisionStore:
             fresh.status = STATUS_EXPIRED
             fresh.answer = fresh.default_key or None
             fresh.answered_at = now
-            fresh.answered_via = "session-gone"
-            fresh.answer_note = ("no live session was left to read the answer; "
-                                 "the declared default applied")
+            fresh.answered_via = via
+            fresh.answer_note = note
             fresh.retire_reason = reason
             self._write(fresh)
             card.status = fresh.status
@@ -1810,17 +2029,21 @@ class DecisionStore:
         The queue accumulates asks raised by sessions that then died: the card
         stays "open" forever because nothing will ever answer it, and it pins
         itself above every live ask. This closes exactly those -- an open card,
-        older than ``max_age_h``, whose raising session is PROVABLY gone and
-        which has no live waiter -- as ``expired`` with its declared default
-        applied, ``answered_via="session-gone"`` and the reason on the card.
-        Credential, blocked and blocker cards are never eligible.
+        older than ``max_age_h``, whose requester is PROVABLY gone and which has
+        no live waiter -- as ``expired`` with its declared default applied and
+        the reason on the card.
+
+        The eligibility is :meth:`_retire_reason_if_gone`, the SAME rule
+        :meth:`retire_gone` applies on every daemon sweep: a credential ask is
+        never eligible; a permission grant is eligible AT ONCE (no age gate, and
+        ``max_age_h`` does not apply to it) because a grant for a dead session
+        can never be acted on; every other kind past its OWN TTL.
 
         ``dry_run`` returns the cards it WOULD retire and writes nothing.
 
-        ``max_age_h`` defaults to the SAME threshold the eligibility test uses
-        (:func:`retire_after_seconds`), never a second hardcoded 24h: otherwise
-        lowering the threshold changed nothing, because the scan window still
-        refused to look at anything younger.
+        ``max_age_h`` defaults to the store's retire window, never a second
+        hardcoded 24h, so lowering the threshold changes what the scan window
+        looks at too.
         """
         t = time.time() if now is None else float(now)
         if max_age_h is None:
@@ -1831,7 +2054,8 @@ class DecisionStore:
             card = self._read_file(target, st)
             if card is None or not card.is_open:
                 continue
-            if float(card.created_at or 0.0) > cutoff:
+            grant = is_permission_grant(card)
+            if not grant and float(card.created_at or 0.0) > cutoff:
                 continue
             reason = self._retire_reason_if_gone(card, t)
             if reason is None:
@@ -1840,7 +2064,74 @@ class DecisionStore:
                 card.retire_reason = reason
                 out.append(card)
                 continue
-            if self._retire(card, reason, t):
+            if grant:
+                via = "requester-gone"
+                note = "the requester is gone; a permission grant for a dead " \
+                       "session is never granted (nothing changed)"
+            else:
+                via = "session-gone"
+                note = ("no live session was left to read the answer; "
+                        "the declared default applied")
+            if self._retire(card, reason, t, via=via, note=note):
+                out.append(card)
+        return out
+
+    def is_actionable(self, card: DecisionCard) -> bool:
+        """Can anyone still act on ``card``? See :func:`is_actionable`."""
+        return is_actionable(card)
+
+    def retire_gone(self, now: Optional[float] = None,
+                    *, dry_run: bool = False) -> list[DecisionCard]:
+        """Retire every open card whose REQUESTER is provably gone.
+
+        This is the DAEMON-SWEEP door (``delivery.sweep`` calls it before every
+        escalation pass) and it applies :meth:`_retire_reason_if_gone` with no
+        extra age window:
+
+        1. A **permission-grant** card (``source.agent="claude-permission-grant"``,
+           :func:`is_permission_grant`) closes AT ONCE with ``retire_reason``
+           "requester gone". Granting would write an allow rule for a session
+           that no longer exists; the card can never be acted on again.
+        2. Any other non-credential card closes once it is older than its
+           KIND'S TTL (:func:`kind_ttl_seconds`) -- 12 h for a blocked session,
+           6 h for info, the store's retire window otherwise. A credential ask is
+           never retired this way: the secret outlives the session that asked.
+
+        Both close as ``expired`` with the declared default applied (a permission
+        grant's default is "deny", i.e. nothing is granted), ``answered_via``
+        ``"requester-gone"``, and the requester named on the card. Every surface
+        then stops counting it and the delivery sweep has nothing left to push.
+        Retiring releases the dedupe key, so a LIVE session raising the same ask
+        again still gets a fresh card.
+
+        ``dry_run`` returns the cards it would retire and writes nothing.
+        """
+        t = time.time() if now is None else float(now)
+        out: list[DecisionCard] = []
+        for target, st in self._scan():
+            # Pre-filter on the cached raw status: this runs every sweep, and
+            # building every CLOSED card to throw it away is how the store got
+            # slow enough to time out its whole sweep once (see sweep()).
+            raw = self._read_raw(target, st)
+            if raw is None or str(raw.get("status") or STATUS_OPEN) != STATUS_OPEN:
+                continue
+            card = self._read_file(target, st)
+            if card is None or not card.is_open:
+                continue
+            reason = self._retire_reason_if_gone(card, t)
+            if reason is None:
+                continue
+            if dry_run:
+                card.retire_reason = reason
+                out.append(card)
+                continue
+            if is_permission_grant(card):
+                note = ("the requester is gone; a permission grant for a dead "
+                        "session is never granted (nothing changed)")
+            else:
+                note = ("no live session was left to read the answer; "
+                        "the declared default applied")
+            if self._retire(card, reason, t, via="requester-gone", note=note):
                 out.append(card)
         return out
 
@@ -1859,12 +2150,17 @@ class DecisionStore:
             due = card.created_at + info_ttl_seconds()
         elif due is None:
             # No deadline, so nothing would ever close it. Retire it when nobody
-            # is left who could answer -- same rule, same skip list, same audit
-            # trail as the hourly `retire_stale` pass, so the queue looks the
-            # same whether or not the sweep has run.
+            # is left who could answer -- the SAME one rule `retire_gone` and
+            # `retire_stale` apply, so the queue looks the same whether or not
+            # the sweep has run.
             retire_reason = self._retire_reason_if_gone(card, now)
             if retire_reason is not None:
-                due = card.created_at + retire_after_seconds()
+                # Due NOW: _retire_reason_if_gone has already enforced the
+                # eligibility window (a permission grant at once, every other
+                # kind past its own TTL). Re-imposing `created_at + retire window`
+                # here made the READ path disagree with the sweep -- a dead
+                # grant stayed visible to any surface that only listed the store.
+                due = now
                 retirement = True
         if due is None or now < due:
             return False
@@ -1880,9 +2176,17 @@ class DecisionStore:
                 fresh.answer_note = ("context card closed on its own after "
                                      f"{info_ttl_seconds() / 3600:g}h; it was never a question")
             elif retirement:
-                fresh.answered_via = "session-gone"
-                fresh.answer_note = ("no live session was left to read the answer; "
-                                     "the declared default applied")
+                if is_permission_grant(fresh):
+                    # Same provenance and note `retire_gone` records, so the
+                    # audit trail does not depend on WHICH sweep closed the card.
+                    fresh.answered_via = "requester-gone"
+                    fresh.answer_note = ("the requester is gone; a permission grant "
+                                         "for a dead session is never granted "
+                                         "(nothing changed)")
+                else:
+                    fresh.answered_via = "session-gone"
+                    fresh.answer_note = ("no live session was left to read the answer; "
+                                         "the declared default applied")
                 fresh.retire_reason = retire_reason
             else:
                 fresh.answered_via = "deadline"
@@ -2040,6 +2344,14 @@ class DecisionStore:
                         f"{picked!r} is not an option for {card_id} — pick: {valid}"
                     )
                 picked = opt.key
+                # A TERMINAL reply is free text typed at a session. It answers
+                # only when it names this option (d-9vph, 2026-11-16).
+                if (via or "").strip().lower() == "terminal" and (
+                        reply_choice(note, card.options, card.id) != picked):
+                    raise DecisionError(
+                        f"a terminal reply must name an option of {card_id} "
+                        f"({', '.join(o.key for o in card.options)}); free text "
+                        "never answers a card")
             card.status = STATUS_ANSWERED
             card.answer = picked
             card.answer_note = note or None

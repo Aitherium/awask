@@ -24,14 +24,15 @@ SELF = 'awask'
 #: package cannot read the registry, and a doctor that guessed at the family
 #: would go stale in silence. Regenerate to update.
 FAMILY = [
-    'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awcams', 'awcap', 'awclassify', 'awdecide',
-    'awdeck', 'awdelphi', 'awdiscord', 'awdit', 'awembed', 'awevolve', 'awfind', 'awflow',
-    'awfocus', 'awgit', 'awgraph', 'awgym', 'awiam', 'awindex', 'awkno', 'awm', 'awmail', 'awmine',
-    'awnboard', 'awnest', 'awnet', 'awnode', 'awpermit', 'awplay', 'awpool', 'awpredict', 'awprism',
-    'awprove', 'awreason', 'awrecover', 'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awreport',
-    'awresearch', 'awrise', 'awrouter', 'awrtifact', 'awrun', 'awscope', 'awscreen', 'awseal',
-    'awsettings', 'awshare', 'awsprite', 'awstorage', 'awsuite', 'awswarm', 'awtax', 'awtoll',
-    'awtunnel', 'awvision', 'awvoice', 'awwall', 'gawbbonet',
+    'awavatar', 'awbac', 'awbrain', 'awbrowse', 'awcams', 'awcap', 'awclassify', 'awcrowd',
+    'awdecide', 'awdeck', 'awdelphi', 'awdiscord', 'awdit', 'awedgerunner', 'awembed', 'awevolve',
+    'awexpress', 'awfind', 'awflow', 'awfocus', 'awgather', 'awgit', 'awgov', 'awgraph', 'awgym',
+    'awiam', 'awindex', 'awkno', 'awm', 'awmail', 'awmine', 'awnboard', 'awnest', 'awnet', 'awnode',
+    'awpermit', 'awplay', 'awpool', 'awpredict', 'awprism', 'awprove', 'awreason', 'awrecover',
+    'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise', 'awrouter',
+    'awrtifact', 'awrun', 'awscope', 'awscreen', 'awseal', 'awsettings', 'awshare', 'awsprite',
+    'awstorage', 'awsuite', 'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvision', 'awvoice',
+    'awwall', 'gawbbonet',
 ]
 FAMILY_ERROR = None
 PAIRS_WITH = ['awdiscord', 'adk', 'awmail', 'awnest', 'awrelay', 'awrise']

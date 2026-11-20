@@ -5,7 +5,7 @@
 """Surprise-bus interrupts as attention-beam items.
 
 The fleet's five surprise producers publish one schema to one ledger
-(``AitherOS/lib/cognitive/surprise_bus.py``). This is the reader that makes the
+(the platform's ``surprise_bus.py``). This is the reader that makes the
 number matter: an event with ``interrupt=true`` becomes a card-shaped item that
 :func:`awask.beam.build` ranks with every other ask. There is no second
 ranking here -- the item carries ``kind``/``urgency``/``created_at`` and the beam's
@@ -24,7 +24,7 @@ Rules, all in :func:`fold` (pure, no I/O):
 It reads the JSONL ledger, not the Flux topic: this daemon runs on the host with
 no bus connection, and the ledger exists exactly so a reader works without one.
 Field names and the file name mirror ``surprise_bus`` and are pinned by
-``AitherOS/dev/tools/check_surprise_bus.py``. The ledger is a file any local
+the platform's ``check_surprise_bus.py``. The ledger is a file any local
 process can append to, so everything read from it is treated as data: numbers are
 re-parsed, strings are reduced to a safe alphabet and capped.
 

@@ -99,7 +99,7 @@ DESK_PORT_FILE = Path("Desk") / "bridge-port.txt"
 def desk_bridge_port_file() -> Path:
     """The port file awdesk's launcher writes on THIS machine.
 
-    Twin of ``AitherOS/lib/core/desk_bridge.py`` -- copied, not imported: this module
+    Twin of the platform's ``desk_bridge.py`` -- copied, not imported: this module
     also ships inside the standalone ``awask`` package, which has no AitherOS tree.
     """
     appdata = os.environ.get("APPDATA") or os.environ.get("XDG_CONFIG_HOME")
@@ -721,6 +721,20 @@ def notify(card: DecisionCard, store: Optional[DecisionStore] = None) -> NotifyR
     except OSError as exc:
         open_cards = [card]
         errors.append(f"could not count open cards: {exc}")
+    else:
+        # "N decisions waiting" must mean N cards someone can still act on. A
+        # permission grant for a provably dead session is not waiting on anybody
+        # (store.is_actionable) and inflating the number with it is the "58
+        # decisions waiting" the owner was staring at (2026-11-20).
+        actionable = getattr(store, "is_actionable", None)
+        if callable(actionable):
+            try:
+                open_cards = [c for c in open_cards if actionable(c)]
+            except Exception as exc:  # noqa: BLE001 - a count must never fail a notify
+                # Said out loud rather than swallowed: the count now includes
+                # cards a surface may have dropped, and "N decisions waiting" is
+                # the number the owner acts on.
+                errors.append(f"could not filter actionable cards: {exc}")
 
     state = _read_state()
     last = float(state.get("last_toast_at") or 0.0)
