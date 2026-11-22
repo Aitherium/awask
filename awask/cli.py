@@ -1146,7 +1146,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
     _dv = locals().get("argv")
     if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:
-        from ._doctor import report
+        try:
+            from ._doctor import report
+        except ImportError as exc:
+            print("the doctor command is not available in this build: %s" % exc,
+                  file=__import__("sys").stderr)
+            return 2
         return report()
     # GENERATED repo-state intercept (gen_aw_doctor.py) -- do not edit
     try:
