@@ -157,8 +157,13 @@ def try_chat_steer(session_id: str, text: str) -> tuple[bool, str]:
     return ok, ("injected into the running turn" if ok else f"steer refused ({detail})")
 
 
-def try_console(session_pid: int, text: str) -> tuple[bool, str]:
-    """Type into the session's console. Opt-in; see ``awask.terminal``."""
+def try_console(session_pid: int, text: str, transcript: str = "") -> tuple[bool, str]:
+    """Type into the session's console. Opt-in; see ``awask.terminal``.
+
+    ``transcript`` lets the terminal tier apply its idle gate: the session must
+    have been quiet for a while AND its prompt must be empty before a keystroke
+    is written. A session in use is never typed into.
+    """
     if not session_pid:
         return False, "no session process recorded"
     try:
@@ -167,7 +172,7 @@ def try_console(session_pid: int, text: str) -> tuple[bool, str]:
         return False, f"terminal module unavailable: {exc}"
     if not terminal.console_input_enabled():
         return False, "console typing is off"
-    return terminal.type_into_console(session_pid, text)
+    return terminal.type_into_console(session_pid, text, transcript=transcript)
 
 
 def deliver(card: DecisionCard, text: str) -> tuple[bool, str]:
@@ -198,7 +203,8 @@ def deliver(card: DecisionCard, text: str) -> tuple[bool, str]:
     if landed:
         return True, why
 
-    landed, why = try_console(card.source.session_pid, text)
+    landed, why = try_console(card.source.session_pid, text,
+                              transcript=card.source.transcript or "")
     attempts.append(f"console: {why}")
     if landed:
         return True, why
