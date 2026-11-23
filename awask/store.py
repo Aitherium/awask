@@ -1144,6 +1144,14 @@ class DecisionCard:
     #: identifies the question, not the object. "" = not attached to anything;
     #: anything off-grammar is normalised to "" by :func:`normalize_subject`.
     subject: str = ""
+    #: An ACTION card's re-probe: ``{"name": "<check id>", "on": ["done", ...]}``.
+    #: The name is a key in the host-local check registry
+    #: (``awask.reprobe``), NEVER a command: a card JSON is writable by any
+    #: agent on the box, so the capability to run anything must live one hop away
+    #: in the operator's registry. When the owner answers with one of ``on``, the
+    #: store runs the check, writes the measurement back (fact + note) and steers
+    #: the raising session with the result.
+    action_check: Optional[dict[str, Any]] = None
     #: Why the store closed this card without the owner answering it. Only ever
     #: set on an auto-retirement (``answered_via="session-gone"``), and only when
     #: the reason is POSITIVE -- the raiser's process is gone and no waiter is
@@ -1282,6 +1290,8 @@ class DecisionCard:
             waiters=[DecisionSource.from_dict(w) for w in (raw.get("waiters") or [])
                      if isinstance(w, dict)],
             subject=normalize_subject(raw.get("subject")),
+            action_check=(dict(raw["action_check"])
+                          if isinstance(raw.get("action_check"), dict) else None),
             retire_reason=(
                 str(raw["retire_reason"]) if raw.get("retire_reason") else None
             ),
@@ -1605,6 +1615,13 @@ class DecisionStore:
             raise DecisionError("a card must have a title — that is the whole point")
         if card.urgency not in URGENCIES:
             raise DecisionError(f"urgency must be one of {URGENCIES}, got {card.urgency!r}")
+        if card.action_check is not None:
+            spec = card.action_check
+            name = str((spec or {}).get("name") or "").strip() if isinstance(spec, dict) else ""
+            if not name:
+                raise DecisionError(
+                    "action_check must be {\"name\": <registered check id>} — the card "
+                    "names a check, it never carries a command")
 
         # Credential-specific validation
         if card.kind == "credential":
@@ -2274,6 +2291,27 @@ class DecisionStore:
             print(f"[decisions] card recipe hook failed for {card.id}: "
                   f"{exc.__class__.__name__}: {exc}", file=sys.stderr)
 
+    def _apply_action_check(self, card: DecisionCard) -> None:
+        """Run the check an ACTION card named, when the answer says it is done.
+
+        Called from the same transition as :meth:`_apply_card_recipe`, for the
+        same reason: every answer path passes through here. The module is loaded
+        lazily because ``awask`` ships this store with a stdlib-only rule and the
+        re-probe must never be imported at module load.
+
+        Never raises. A failed probe is a measurement, not a reason to undo the
+        owner's answer — the answer is already durable before this runs.
+        """
+        if not isinstance(card.action_check, dict) or not card.action_check:
+            return
+        try:
+            from awask import reprobe
+
+            reprobe.run_and_record(self, card)
+        except Exception as exc:  # pragma: no cover - the answer must survive this
+            print(f"[decisions] action-check hook failed for {card.id}: "
+                  f"{exc.__class__.__name__}: {exc}", file=sys.stderr)
+
     def answer(
         self,
         card_id: str,
@@ -2376,6 +2414,10 @@ class DecisionStore:
         # The terminal-reply hook answers with deliver=False, and a card raised
         # by a scheduler has no session to deliver to at all.
         self._apply_card_recipe(card)
+        # Same transition, same reason: an ACTION card named a check, and the
+        # answer is the moment to run it. An agent that asked the owner to
+        # power-cycle a switch must be measuring again afterward, not re-asking.
+        self._apply_action_check(card)
         self._sync_relay(card)
 
         if deliver:
@@ -2399,6 +2441,25 @@ class DecisionStore:
             if not clean:
                 return card
             card.facts.extend(clean)
+            self._write(card)
+            return card
+
+    def add_note(self, card_id: str, text: str, *, via: str = "cli") -> DecisionCard:
+        """Append one note to a card, open or closed. Never touches status.
+
+        The re-probe writes its measurement here (``via="reprobe"``) because a
+        note is the one place every surface already renders: the window, the
+        desk whisper, the phone cards and the terminal views. A fact alone would
+        be visible only where the fact list is drawn.
+        """
+        body = " ".join(str(text or "").split())
+        with self._lock:
+            card = self.get(card_id)
+            if card is None:
+                raise DecisionError(f"no such card: {card_id}")
+            if not body:
+                return card
+            card.notes.append(DecisionNote(text=body, via=via))
             self._write(card)
             return card
 
