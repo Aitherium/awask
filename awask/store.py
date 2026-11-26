@@ -2358,7 +2358,7 @@ class DecisionStore:
             # the popup, and copied into session transcripts; a value written
             # here would persist to all four despite to_dict_safe() scrubbing
             # at the boundaries. The value's only door is secure_prompt.py:
-            # masked input -> vault, then this marker. (DC008)
+            # masked input -> vault, then this marker.
             if (card.kind or "").strip().lower() == "credential":
                 if picked != DecisionCard.CREDENTIAL_ANSWER:
                     raise DecisionError(

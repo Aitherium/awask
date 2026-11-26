@@ -380,7 +380,7 @@ def to_text(ui: Any) -> str:
     return inline(ROOT_ID, set())
 
 
-# ── self-test (DC006: this module can prove it still fails) ─────────────────────
+# ── self-test (this module can prove it still fails) ───────────────────────────
 
 
 def _self_test() -> int:

@@ -389,6 +389,18 @@ def _host_prompt_module():
     return module
 
 
+DEFAULT_VAULT_URL = "https://localhost:8111"
+
+
+def _vault_url(host: Any) -> str:
+    """Vault base URL: ``$AWASK_VAULT_URL`` > the host script's ``VAULT_URL`` > local default."""
+    env = os.environ.get("AWASK_VAULT_URL", "").strip()
+    if env:
+        return env.rstrip("/")
+    hosted = str(getattr(host, "VAULT_URL", "") or "").strip() if host is not None else ""
+    return (hosted or DEFAULT_VAULT_URL).rstrip("/")
+
+
 def run_verify(recipe: dict[str, Any], *, runner=None, user: str = "",
                candidate: Optional[str] = None) -> dict[str, Any]:
     """Execute the recipe's probe in the fleet. Returns the verdict dict.
@@ -409,12 +421,12 @@ def run_verify(recipe: dict[str, Any], *, runner=None, user: str = "",
         raise RecipeError(f"verify.auth {verify.get('auth')!r} is not supported (bearer only)")
     if runner is None:
         host = _host_prompt_module()
-        vault_url = getattr(host, "VAULT_URL", "https://aitheros-secrets:8111")
+        vault_url = _vault_url(host)
 
         def runner(script: str, timeout: int) -> "tuple[int, str]":
             return host._sh_in_container(script, timeout)  # noqa: SLF001 - the one door
     else:
-        vault_url = "https://aitheros-secrets:8111"
+        vault_url = _vault_url(None)
     vault_name = str(recipe.get("vault_name") or "")
     if "{user}" in vault_name or "{user}" in str(verify.get("user") or ""):
         if not user:

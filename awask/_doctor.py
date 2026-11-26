@@ -27,12 +27,12 @@ FAMILY = [
     'awavatar', 'awbac', 'awbench', 'awbrain', 'awbrowse', 'awcams', 'awcap', 'awclassify',
     'awcrowd', 'awdecide', 'awdeck', 'awdelphi', 'awdiscord', 'awdit', 'awedgerunner', 'awembed',
     'awevolve', 'awexpress', 'awfind', 'awflow', 'awfocus', 'awgather', 'awgit', 'awgov', 'awgraph',
-    'awgym', 'awiam', 'awindex', 'awkno', 'awm', 'awmail', 'awmine', 'awnboard', 'awnest', 'awnet',
-    'awnode', 'awpermit', 'awplay', 'awpool', 'awpredict', 'awprism', 'awprove', 'awreason',
-    'awrecover', 'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awreport', 'awresearch', 'awrise',
-    'awrouter', 'awrtifact', 'awrun', 'awscope', 'awscreen', 'awseal', 'awsettings', 'awshare',
-    'awsprite', 'awstorage', 'awsuite', 'awswarm', 'awtax', 'awtoll', 'awtunnel', 'awvision',
-    'awvoice', 'awwall', 'gawbbonet',
+    'awgym', 'awiam', 'awindex', 'awkno', 'awlert', 'awm', 'awmail', 'awmine', 'awnboard', 'awnest',
+    'awnet', 'awnode', 'awpermit', 'awplay', 'awpool', 'awport', 'awpredict', 'awprism', 'awprove',
+    'awreason', 'awrecover', 'awrecurse', 'awrelay', 'awrena', 'awrepl', 'awreport', 'awresearch',
+    'awrise', 'awrouter', 'awrtifact', 'awrun', 'awscope', 'awscreen', 'awseal', 'awsettings',
+    'awshare', 'awsprite', 'awstorage', 'awstream', 'awsuite', 'awswarm', 'awtax', 'awtoll',
+    'awtunnel', 'awvision', 'awvoice', 'awwall', 'gawbbonet',
 ]
 FAMILY_ERROR = None
 PAIRS_WITH = ['awdiscord', 'adk', 'awmail', 'awnest', 'awrelay', 'awrise']
@@ -47,7 +47,7 @@ ENV_REQUIRED = []
 ENV_OPTIONAL = [
     'AWASK_ASK_HOLD', 'AWASK_ASK_HOLD_SECONDS', 'AWASK_ASK_HOLD_TOTAL_SECONDS', 'AWASK_ASK_TTL',
     'AWASK_AWAY_IDLE_SECONDS', 'AWASK_CALL_TTL', 'AWASK_GROUPING', 'AWASK_NOTIFY_COOLDOWN',
-    'AWASK_NOTIFY_WAIT_TTL', 'AWASK_STOP_WAIT',
+    'AWASK_NOTIFY_WAIT_TTL', 'AWASK_STOP_WAIT', 'AWASK_VAULT_URL',
 ]
 
 

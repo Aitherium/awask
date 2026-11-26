@@ -322,7 +322,7 @@ class DecisionChannelBridge:
             # act on is an interruption, not a decision surface.
             #
             # EXCEPT credential cards (kind="credential"): their ONLY door is
-            # the masked prompt (secure_prompt.py, DC008) — no popup renders
+            # the masked prompt (secure_prompt.py) — no popup renders
             # them, the deck reply box is not allowed to, and without a DM the
             # owner never learns the ask exists. Measured 2026-08-27: three
             # secure-input cards (LAMBDA/HETZNER/GOOGLE) sat undelivered for
